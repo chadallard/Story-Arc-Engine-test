@@ -20,7 +20,11 @@ function onLibrary_SAE(){
   storeArcToSC();
 }
 
-function onInput_SAE(text){
+function onInput_SAE(text) {
+  if (state.stop_SAE == true) {
+    return text
+  }
+
   text = helpCommandInput_SAE(text);
 
   text = detectRedoStoryArc(text);
@@ -30,33 +34,41 @@ function onInput_SAE(text){
   return text;
 }
 
-function onContext_SAE(text){
+function onContext_SAE(text) {
+  if (state.stop_SAE == true) {
+    return text
+  }
+
   text = removeAngleText(text);
-  
+
   text = feedAIPrompt(text);
 
   text = feedStoryArc(text);
-  
+
   text = logContextToSettingsSC(text);
   //log(text);
-  
+
   return text;
 }
 
 function onOutput_SAE(text) {
+  if (state.stop_SAE == true) {
+    return text
+  }
+
   text = helpCommandOutput_SAE(text);
 
   text = saveStoryArc(text);
   //log("state.storyArc", state.storyArc);
 
   text = callAIForArc(text);
-  
-  log(text);
+
+  //log(text);
 
   arcElementRemoval();
 
   turnCounter_SAE();
-  
+
   return text;
 }
 
@@ -74,6 +86,7 @@ function helpCommandInput_SAE(text){
     - Text encased in << >> are auto cleared from context.
     - Repeated attempts for generating story arcs may be due to AI failing to fulfill instructions or low response length (< 125). Troubleshoot by stopping and retrying in a few turns, or edit your arc prompt in "Story Arc Settings".
 
+    - stop_SAE: Type "true" to disable SAE
     - turnsPerAICall: Number of turns before calling AI to update the story arc. Takes in an integer.
     - arcPrompt: Prompt that is fed to the AI to generate a story arc. Must be encased in << >>.
     - attemptLimit: Number of attempts at generating story arc before stopping.
@@ -104,12 +117,16 @@ state.arcPrompt = state.arcPrompt || [`
 - Each event must build on the last and be further in the future.  
 - Dont write clichés, dialogue, description, and prose.  
 - Dont write the protagonist, main character, and player.  
-- Use only brief, high-level story developments.  
+- Use only brief, non rigid, high-level story developments.  
 - Events contain turning points, twists, discoveries, conflicts, motives, and lore.  
 - Maintain immersion and consistent narrative tone.>>`
 ];
 
 // Initialize variables
+if(state.stop_SAE == undefined){
+  state.stop_SAE = false
+}
+
 if(state.unlockFeedAIPrompt == undefined){
   state.unlockFeedAIPrompt = false;
 }
@@ -183,6 +200,8 @@ function createIfNoSettingsSC(){
     // Fetch the sc
     const settingsSC = storyCards.find(sc => sc.title === "Story Arc Settings");
     settingsSC.description = `
+    Type /help sae for more info.
+    stop_SAE: Type "true" to disable SAE.
     turnsPerAICall: Number of turns before calling AI to update the story arc. Takes in an integer.
     arcPrompt: Prompt that is fed to the AI to generate a story arc. Must be encased in << >>.
     attemptLimit: Number of attempts at generating story arc before stopping.
@@ -195,12 +214,22 @@ function storeSettingsToSC(){
   // Fetch the sc
   const settingsSC = storyCards.find(sc => sc.title === "Story Arc Settings");
 
-  settingsSC.entry = `turnsPerAICall = ${state.turnsPerAICall}\nattemptLimit = ${state.attemptLimit}\nturnsPerElemRemoval = ${state.turnsPerElemRemoval}\narcPrompt = ${state.arcPrompt}`
+  settingsSC.entry = `stop_SAE = ${state.stop_SAE}\nturnsPerAICall = ${state.turnsPerAICall}\nattemptLimit = ${state.attemptLimit}\nturnsPerElemRemoval = ${state.turnsPerElemRemoval}\narcPrompt = ${state.arcPrompt}`
 }
 
 function retrieveSettingsFromSC(){
   // Fetch the sc
   const settingsSC = storyCards.find(sc => sc.title === "Story Arc Settings");
+
+  // Extract stop_SAE
+  const stopSAEMatch = settingsSC.entry.match(/stop_SAE\s*=\s*([A-Za-z]+)/);
+  if (stopSAEMatch[1].toLowerCase() == "true") {
+    state.stop_SAE = true
+  }
+  else if (stopSAEMatch[1].toLowerCase() == "false"){
+    state.stop_SAE = false
+  }
+  log("state.stop_SAE: " + state.stop_SAE)
 
   // Extract turnsPerAICall
   const turnsMatch = settingsSC.entry.match(/turnsPerAICall\s*=\s*(\d+)/);
