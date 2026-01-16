@@ -223,7 +223,9 @@ function retrieveSettingsFromSC(){
 
   // Extract stop_SAE
   const stopSAEMatch = settingsSC.entry.match(/stop_SAE\s*=\s*([A-Za-z]+)/);
-  if (stopSAEMatch[1].toLowerCase() == "true") {
+  if(stopSAEMatch == null){
+  }
+  else if (stopSAEMatch[1].toLowerCase() == "true") {
     state.stop_SAE = true
   }
   else if (stopSAEMatch[1].toLowerCase() == "false"){
