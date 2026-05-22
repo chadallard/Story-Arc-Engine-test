@@ -2723,8 +2723,8 @@ I hope you will have lots of fun!
         ].some(naughty => line.includes(naughty))
         // Remove "story continues" type artifacts from task prompts bleeding through
         || (lower.includes("story") && lower.includes("continu"))
-        // Remove numbered list items (e.g., "1.", "[1]", "2.")
-        || /^\[?\d+(?:\.?\]|\.)/.test(lower)
+        // Remove numbered list items (e.g., "1.", "[1]", "2.") — not during SAE arc generation
+        || (/^\[?\d+(?:\.?\]|\.)/.test(lower) && !state.saeArcOutputPass)
         // Remove stray "user" labels from ChatML imitation
         || /^\s*user(?:$|[^a-z])/.test(lower)
         // Remove lines containing only " " and/or "-"
@@ -8915,6 +8915,10 @@ function onOutput_SAE(text) {
 
   text = helpCommandOutput_SAE(text);
 
+  if (state.saveOutput) {
+    state.saeArcOutputPass = true;
+  }
+
   text = saveStoryArc(text);
   //log("state.storyArc", state.storyArc);
 
@@ -9146,25 +9150,33 @@ function feedAIPrompt(text) {
   return text;
 }
 
+function extractStoryArcLines(text) {
+  const lines = text
+    .replace(/[\u200B-\u200D]/g, "")
+    .replace(/\n?\d+\.\s*$/, "")
+    .split("\n")
+    .map(line => line.trim())
+    .filter(line => /^\d+\.\s/.test(line) || /^\d+\)\s/.test(line));
+  return lines.map(line => line.replace(/^(\d+)\)\s/, "$1. "));
+}
+
+function isValidStoryArc(lines) {
+  const minEvents = state.arcMinEvents || 6;
+  return lines.length >= minEvents;
+}
+
 // After AI call and prompt is fed to context, this function saves the generated story arc during the following output hook
 function saveStoryArc(text) {
   if (state.saveOutput) {
-    // Copy the generated story arc from the output text
-    outputtedArc = text;
+    state.saeArcOutputPass = true;
+    const arcLines = extractStoryArcLines(text);
+    const outputtedArc = arcLines.join("\n");
 
-    // Clean story arc text to ensure no incomplete numbered lines
-    log("Before: ", outputtedArc);
-    outputtedArc = outputtedArc.replace(/\n?\d+\.\s*$/, '');
-    outputtedArc = outputtedArc
-      .split('\n')
-      .filter(line => /^\d+\.\s/.test(line.trim()))
-      .join('\n');
-    log("After: ", outputtedArc);
+    log("SAE arc lines:", arcLines.length, outputtedArc);
 
-    // Incorrect story arc formatting recalls AI
-    if (!/[89]/.test(outputtedArc)) {
+    if (!isValidStoryArc(arcLines)) {
       // SAE Attempt Limit
-      if (state.attemptCounter == state.attemptLimit) {
+      if (state.attemptCounter >= state.attemptLimit) {
         state.saveOutput = false;
 
         state.attemptCounter = 0;
@@ -9230,6 +9242,7 @@ function detectRedoStoryArc(text) {
   if (text.includes("/redo arc")) {
     state.unlockFeedAIPrompt = true;
     state.saveOutput = true;
+    state.attemptCounter = 0;
 
     text = "<< ➰ Regenerating Story Arc... >>"
   }
