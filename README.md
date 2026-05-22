@@ -34,7 +34,8 @@ Context must return `{ text, stop }` so Inner Self’s `stop` flag is preserved.
 - Story cards: **Story Arc Settings**, **Current Story Arc**
 - `/help sae` — commands and settings
 - `/redo arc` — regenerate arc
-- `/stop` — cancel arc generation in progress
+- `/stop` — cancel arc generation in progress (works any time while arc gen is active)
+- On `/redo arc`, use **Continue** each time you see the generating message; the arc prompt is re-injected every turn until a valid list is saved
 - Set `stop_SAE = true` in settings to disable only the arc engine (Inner Self keeps running)
 
 ## Inner Self (quick reference)

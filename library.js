@@ -1161,6 +1161,12 @@ function InnerSelf(hook) {
       text ||= " ";
       return;
     }
+    if (state.saveOutput) {
+      // Story Arc Engine owns this turn — do not inject brains or truncate context
+      IS.encoding = "";
+      text ||= " ";
+      return;
+    }
     /**
      * Removes visual indicators from all story cards
      * Called when no agent is triggered or Inner Self is disabled
@@ -8891,6 +8897,10 @@ function onInput_SAE(text) {
 
   text = detectStopGenerating(text);
 
+  if (state.saveOutput && !/\/(?:stop|redo arc)/i.test(text)) {
+    text = "\u200B";
+  }
+
   return text;
 }
 
@@ -8900,6 +8910,13 @@ function onContext_SAE(text) {
   }
 
   text = removeAngleText(text);
+
+  if (state.saveOutput) {
+    armArcMemoryOverrides();
+    text = buildArcOnlyContext(text);
+    log("SAE arc-only context", text.length);
+    return text;
+  }
 
   text = feedAIPrompt(text);
 
@@ -8920,9 +8937,10 @@ function onOutput_SAE(text) {
   }
 
   text = saveStoryArc(text);
-  //log("state.storyArc", state.storyArc);
 
-  text = callAIForArc(text);
+  if (!state.saveOutput) {
+    text = callAIForArc(text);
+  }
 
   //log(text);
 
@@ -8967,8 +8985,33 @@ function helpCommandOutput_SAE(text) {
   return text;
 }
 
-// Prompt to be fed to AI context
-state.arcPrompt = state.arcPrompt || [`
+function unwrapArcPrompt(raw) {
+  let text = (Array.isArray(raw) ? raw.join("\n") : String(raw || "")).trim();
+  if (text.startsWith("<<<")) {
+    text = text.slice(3);
+  } else if (text.startsWith("<<")) {
+    text = text.slice(2);
+  }
+  if (text.endsWith(">>")) {
+    text = text.slice(0, -2);
+  }
+  return text.trim();
+}
+
+function getArcPromptText() {
+  return unwrapArcPrompt(state.arcPrompt);
+}
+
+function parseArcPromptFromSettingsEntry(entry) {
+  const match = entry.match(/arcPrompt\s*=\s*([\s\S]+)/i);
+  if (!match) {
+    return null;
+  }
+  return unwrapArcPrompt(match[1]);
+}
+
+// Prompt to be fed to AI context (plain text in memory; << >> in settings card is optional wrapper)
+state.arcPrompt = state.arcPrompt || unwrapArcPrompt(`
 <<</SYSTEM>  
 - Stop the story.  
 - Only write a structured story arc outline for the future succeeding the current story by following these strict instructions:  
@@ -8980,8 +9023,7 @@ state.arcPrompt = state.arcPrompt || [`
 - Dont write the protagonist, main character, and player.  
 - Use only brief, non rigid, high-level story developments.  
 - Events contain turning points, twists, discoveries, conflicts, motives, and lore.  
-- Maintain immersion and consistent narrative tone.>>`
-];
+- Maintain immersion and consistent narrative tone.>>`);
 
 // Initialize variables
 if (state.stop_SAE == undefined) {
@@ -9022,9 +9064,16 @@ function turnCounter_SAE() {
   log("state.turnNum_SAE: " + state.turnNum_SAE);
 }
 
-// Remove script texts to clean AI context
+// Remove script texts to clean AI context (skip during arc generation)
 function removeAngleText(text) {
+  if (state.saveOutput || state.unlockFeedAIPrompt) {
+    return text;
+  }
   return text.replace(/<<[\s\S]*?>>/g, '');
+}
+
+function isSaeScriptOutput(text) {
+  return /(?:Generating Story Arc|Attempt Limit|Updating Story Arc|Story Arc generated|Regenerating Story Arc)/i.test(text);
 }
 
 function createIfNoArcSC() {
@@ -9112,16 +9161,18 @@ function retrieveSettingsFromSC() {
     state.turnsPerElemRemoval = Number(removalMatch[1]) ?? state.turnsPerElemRemoval;
   }
 
-  // Extract arcPrompt block
-  const promptMatch = settingsSC.entry.match(/arcPrompt\s*=\s*(<<[\s\S]*?>>)/);
-  if (promptMatch) {
-    state.arcPrompt = promptMatch[1];
+  const parsedPrompt = parseArcPromptFromSettingsEntry(settingsSC.entry);
+  if (parsedPrompt) {
+    state.arcPrompt = parsedPrompt;
   }
 
 }
 
 // On output, waits for the correct turn to call AI for generating story arc
 function callAIForArc(text) {
+  if (state.saveOutput) {
+    return text;
+  }
   if (state.turnNum_SAE == 1 || state.turnNum_SAE % state.turnsPerAICall === 0) {
     // Warn player of AI call next turn
     text = text + "\n\n<< ⚠️ Updating Story Arc Next Turn! Click 'Continue' or type '/stop'. >>";
@@ -9132,36 +9183,156 @@ function callAIForArc(text) {
 
     // Unlock save resulting output to save story arc for next onOutput
     state.saveOutput = true;
+    armArcMemoryOverrides();
     log("state.saveOutput: " + state.saveOutput);
   }
 
   return text;
 }
 
-// After AI is called, this function will feed the prompt onContext for AI to create a story arc
-function feedAIPrompt(text) {
-  if (state.unlockFeedAIPrompt) {
-    text = text + " " + state.arcPrompt;
+function getStoryPositionBlurb() {
+  if (!Array.isArray(history) || history.length === 0) {
+    return "Use plot components and memories above for story position.";
+  }
+  const last = [...history].reverse().find(a => {
+    const t = a?.type;
+    return t === "continue" || t === "do" || t === "say" || t === "story";
+  });
+  const raw = (last?.text ?? last?.rawText ?? "").replace(/\s+/g, " ").trim();
+  if (!raw || isSaeScriptOutput(raw)) {
+    return "Use plot components and memories above for story position.";
+  }
+  return raw.slice(0, 350);
+}
 
-    // Turn off after done feeding
-    state.unlockFeedAIPrompt = false;
+function armArcMemoryOverrides() {
+  state.memory = state.memory || {};
+  if (state.saeAuthorsNoteBackup === undefined) {
+    state.saeAuthorsNoteBackup = state.memory.authorsNote ?? "";
+  }
+  const prompt = getArcPromptText();
+  state.memory.authorsNote = [
+    "STORY ARC ENGINE — OUT-OF-STORY TASK (not fiction, not a scene)",
+    prompt,
+    "Respond ONLY with eleven numbered lines: 1. ... through 11. ... No prose before, after, or between."
+  ].join("\n\n");
+  state.memory.frontMemory = [
+    "MANDATORY: Your response must start with the characters 1. (the numeral one and a period).",
+    "Write exactly 11 numbered plot beats for future story direction. No story narration. No dialogue.",
+    "If you write anything other than the list, the task fails."
+  ].join(" ");
+}
+
+function disarmArcMemoryOverrides() {
+  if (state.memory) {
+    state.memory.frontMemory = "";
+    if (state.saeAuthorsNoteBackup !== undefined) {
+      state.memory.authorsNote = state.saeAuthorsNoteBackup;
+      delete state.saeAuthorsNoteBackup;
+    }
+  }
+}
+
+function buildArcOnlyContext(fullText) {
+  const prompt = getArcPromptText();
+  const blurb = getStoryPositionBlurb();
+  const memorySlice = (info?.memoryLength && fullText)
+    ? fullText.slice(0, Math.min(info.memoryLength, 900))
+    : "";
+  const authorInContext = (fullText.match(/\[Author's note:[\s\S]*?]/i) || [""])[0].slice(0, 500);
+
+  return [
+    "=== STORY ARC ENGINE — PLANNING MODE (NOT STORY CONTINUATION) ===",
+    "You are not writing the next scene. You are writing an outline only.",
+    prompt,
+    "",
+    memorySlice ? `Memory excerpt:\n${memorySlice}` : "",
+    authorInContext ? `Author note excerpt:\n${authorInContext}` : "",
+    `Current story position: ${blurb}`,
+    "",
+    "=== REQUIRED OUTPUT (nothing else) ===",
+    "1. (first future plot beat, max 7 words)",
+    "2. (second beat)",
+    "...",
+    "11. (eleventh beat)",
+    "Begin your reply with: 1."
+  ].filter(line => line !== "").join("\n");
+}
+
+// Inject arc prompt every context pass while arc generation is active
+function feedAIPrompt(text) {
+  if (!(state.unlockFeedAIPrompt || state.saveOutput)) {
+    return text;
   }
 
+  const prompt = getArcPromptText();
+  const block = [
+    "STORY ARC ENGINE — STOP NARRATING. Do not write story prose, dialogue, or scenes.",
+    "Output ONLY a numbered list: lines starting with 1. through 11., each under 7 words, future plot beats only.",
+    prompt
+  ].join("\n");
+
+  const header = `=== STORY ARC ENGINE (overrides story continuation this turn) ===\n${block}\n=== END STORY ARC ENGINE ===\n\n`;
+  text = header + text;
+
+  if (/\[Author's note:/i.test(text)) {
+    text = text.replace(
+      /(\[Author's note:[\s\S]*?)(])/i,
+      (_, noteStart, noteEnd) => noteStart + "\n" + block + "\n" + noteEnd
+    );
+  }
+
+  state.unlockFeedAIPrompt = false;
+  log("SAE feedAIPrompt ok", "turn", state.turnNum_SAE, "promptChars", prompt.length, "ctxChars", text.length);
   return text;
 }
 
-function extractStoryArcLines(text) {
-  const lines = text
+function parseStoryArcLinesFromText(text) {
+  const cleaned = String(text || "")
     .replace(/[\u200B-\u200D]/g, "")
-    .replace(/\n?\d+\.\s*$/, "")
+    .replace(/\n?\d+\.\s*$/, "");
+
+  const lineLines = cleaned
     .split("\n")
     .map(line => line.trim())
-    .filter(line => /^\d+\.\s/.test(line) || /^\d+\)\s/.test(line));
-  return lines.map(line => line.replace(/^(\d+)\)\s/, "$1. "));
+    .filter(line => /^\d{1,2}[.)]\s+\S/.test(line) || /^\d{1,2}\.\s/.test(line))
+    .map(line => line.replace(/^(\d{1,2})\)\s+/, "$1. "));
+
+  if (lineLines.length >= 3) {
+    return lineLines;
+  }
+
+  const embedded = [];
+  const re = /(?:^|\n)\s*(\d{1,2})[.)]\s+([^\n]+)/g;
+  let match;
+  while ((match = re.exec(cleaned)) !== null) {
+    embedded.push(`${match[1]}. ${match[2].trim()}`);
+  }
+  return embedded.length > lineLines.length ? embedded : lineLines;
+}
+
+function extractStoryArcLines(text) {
+  let best = parseStoryArcLinesFromText(text);
+
+  if (typeof history !== "undefined" && Array.isArray(history)) {
+    for (let i = history.length - 1; i >= 0 && i >= history.length - 8; i--) {
+      const action = history[i];
+      const raw = action?.text ?? action?.rawText ?? "";
+      if (!raw || isSaeScriptOutput(raw)) {
+        continue;
+      }
+      const found = parseStoryArcLinesFromText(raw);
+      if (found.length > best.length) {
+        best = found;
+      }
+    }
+  }
+
+  return best;
 }
 
 function isValidStoryArc(lines) {
-  const minEvents = state.arcMinEvents || 6;
+  const minEvents = state.arcMinEvents ?? 4;
   return lines.length >= minEvents;
 }
 
@@ -9175,20 +9346,20 @@ function saveStoryArc(text) {
     log("SAE arc lines:", arcLines.length, outputtedArc);
 
     if (!isValidStoryArc(arcLines)) {
-      // SAE Attempt Limit
+      log("SAE arc fail", state.attemptCounter + 1, "lines", arcLines.length, "sample", text.slice(0, 400));
+
       if (state.attemptCounter >= state.attemptLimit) {
         state.saveOutput = false;
-
         state.attemptCounter = 0;
+        disarmArcMemoryOverrides();
 
         text = `\n<< 🧱 Attempt Limit Reached: Keeping Current Arc. Type '/redo arc' or wait for next AI call. >>`
-
       }
       else {
+        state.attemptCounter += 1;
         state.unlockFeedAIPrompt = true;
         state.saveOutput = true;
-
-        state.attemptCounter += 1;
+        armArcMemoryOverrides();
 
         text = `\n<< ⏳ Generating Story Arc (Attempt ${state.attemptCounter}/${state.attemptLimit})... Click 'Continue' or type '/stop'. >>`;
       }
@@ -9196,6 +9367,7 @@ function saveStoryArc(text) {
     // Correct story arc formatting gets saved
     else {
       state.attemptCounter = 0;
+      disarmArcMemoryOverrides();
 
       state.storyArc = "Write the story in the following direction:\n" + outputtedArc;
 
@@ -9243,8 +9415,9 @@ function detectRedoStoryArc(text) {
     state.unlockFeedAIPrompt = true;
     state.saveOutput = true;
     state.attemptCounter = 0;
+    armArcMemoryOverrides();
 
-    text = "<< ➰ Regenerating Story Arc... >>"
+    text = "\u200B";
   }
 
   return text;
@@ -9252,9 +9425,10 @@ function detectRedoStoryArc(text) {
 
 // Function to allow player to stop story arc generating
 function detectStopGenerating(text) {
-  if (text.includes("/stop") && state.unlockFeedAIPrompt == true) {
+  if (text.includes("/stop") && (state.unlockFeedAIPrompt || state.saveOutput)) {
     state.unlockFeedAIPrompt = false;
     state.saveOutput = false;
+    disarmArcMemoryOverrides();
 
     state.attemptCounter = 0;
 

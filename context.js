@@ -1,7 +1,8 @@
-// Context — Inner Self + Story Arc Engine
-InnerSelf("context");
+// Context — Story Arc Engine first (arc prompt), then Inner Self
 const modifier = (text) => {
   text = onContext_SAE(text);
-  return { text, stop };
+  globalThis.text = text;
+  InnerSelf("context");
+  return { text: globalThis.text, stop: globalThis.stop ?? false };
 };
 modifier(text);
