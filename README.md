@@ -1,26 +1,49 @@
-## STORY ARC ENGINE By Yi1i1i
+## Story Arc Engine + Inner Self
 
-## What This Script Does:
-This script automatically helps guide and enhance your story by generating a "Story Arc" — a high-level plot outline made up of key events. It feeds this outline into the AI's context regularly to keep storytelling coherent, immersive, and progressively structured.
+Combined AI Dungeon scripts: **Story Arc Engine** (plot arc guidance) and **[Inner Self](https://github.com/LewdLeah/Inner-Self)** (NPC memory, goals, and self-reflection).
 
-## How It Works:
-Before the set turn, the script prepares the AI to generate an updated story arc.
-You will see a warning telling you that the next turn will be used for generating a story arc.
-After clicking “Continue,” a brief pause message appears while the arc is being created by the AI. It will ask for a retry if the AI fails to create a story arc correctly.
-When complete, a confirmation message lets you know the story arc has been saved and will influence future storytelling.
+## What you get
 
-## How It Helps:
-Keeps long stories focused and immersive.
-Reduces inconsistencies or meandering plotlines.
-Encourages richer, more dynamic story progression.
-Ensures major events stay tied together logically.
+| System | Role |
+|--------|------|
+| **Story Arc Engine** | Periodically generates an 11-point story arc and injects it into the Author's Note so long adventures stay on track. |
+| **Inner Self** | Gives NPCs private “brains” (story card notes), name triggers, and emergent thoughts. Optional Auto-Cards integration is included in the library. |
 
-## Customize It:
-You can view (Spoilers!) or edit the Story Arc at any time in the Story Cards under “Current Story Arc.”
-You are free to modify the settings as well in the settings story card.
+## Install (AI Dungeon scenario)
 
-## How to Install
-Plug and play! Simply plug each script to their respective hooks. 
-Looking for play testers and feedback. Thank you!
+Follow the [Scripting guide](https://help.aidungeon.com/scripting): enable **Scripts** on your scenario, then paste each file into the matching tab and **Save**.
 
-https://play.aidungeon.com/scenario/piAUFAqzm2xZ/story-arc-engine-wip
+| Tab | File in this repo |
+|-----|-------------------|
+| **Input** | `input.js` |
+| **Context** | `context.js` |
+| **Output** | `output.js` |
+| **Library** | `library.js` (full Inner Self + SAE — paste the entire file) |
+
+### Hook order
+
+Each hook runs **Inner Self first**, then **Story Arc Engine**, matching [Inner Self’s recommended pattern](https://github.com/LewdLeah/Inner-Self):
+
+1. `InnerSelf("input" | "context" | "output")` — runs at the top of the hook script.
+2. Your `modifier` calls `onInput_SAE` / `onContext_SAE` / `onOutput_SAE`.
+
+Context must return `{ text, stop }` so Inner Self’s `stop` flag is preserved.
+
+## Story Arc Engine (quick reference)
+
+- Story cards: **Story Arc Settings**, **Current Story Arc**
+- `/help sae` — commands and settings
+- `/redo arc` — regenerate arc
+- `/stop` — cancel arc generation in progress
+- Set `stop_SAE = true` in settings to disable only the arc engine (Inner Self keeps running)
+
+## Inner Self (quick reference)
+
+- In-game card: **Configure Inner Self**
+- Prepare NPCs via `IMPORTANT_SCENARIO_CHARACTERS` at the top of `library.js` (MainSettings / Inner Self creator panel), or `@Name` story card titles
+- See the [Inner Self README](https://github.com/LewdLeah/Inner-Self) for gameplay tips (response length, models, JSON vs colon brain format, etc.)
+
+## Credits
+
+- Story Arc Engine — Yi1i1i (LewdLeah, Purplejump — testing/feedback)
+- Inner Self v1.0.2 — LewdLeah ([MIT](https://github.com/LewdLeah/Inner-Self/blob/main/LICENSE))
