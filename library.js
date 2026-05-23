@@ -220,6 +220,31 @@ globalThis.MainSettings = (class MainSettings {
  * Gives story characters the ability to learn, plan, and adapt over time
  * Inner Self is free and open-source for anyone! ❤️
  */
+function armISThoughtFrontMemory(agentName) {
+  if (state.saveOutput || !agentName) {
+    return;
+  }
+  state.memory = state.memory || {};
+  state.isThoughtTaskActive = agentName;
+  state.memory.frontMemory = [
+    `INNER SELF TASK for ${agentName}:`,
+    `The first character of your reply MUST be "(".`,
+    `Format: (thought_key = \`one short first-person thought\`) then one space then 2nd-person story.`,
+    `Example: (leo_worry = \`I hope they're okay.\`) You hear Leo shift his weight.`
+  ].join(" ");
+  log("IS", "frontMemory armed for thought task:", agentName);
+}
+
+function disarmISThoughtFrontMemory() {
+  delete state.isThoughtTaskActive;
+  if (state.saveOutput) {
+    return;
+  }
+  if (state.memory) {
+    state.memory.frontMemory = "";
+  }
+}
+
 function InnerSelf(hook) {
   "use strict";
   /**
@@ -1159,12 +1184,14 @@ function InnerSelf(hook) {
       // Early exit if Inner Self is disabled
       IS.encoding = "";
       text ||= " ";
+      log("IS", "context skip — Inner Self disabled in config card");
       return;
     }
     if (state.saveOutput) {
       // Story Arc Engine owns this turn — do not inject brains or truncate context
       IS.encoding = "";
       text ||= " ";
+      log("IS", "context skip — SAE arc generation active");
       return;
     }
     /**
@@ -1182,6 +1209,7 @@ function InnerSelf(hook) {
       // No agents are configured
       deindicateAll();
       unzero();
+      log("IS", "context skip — no NPC names in Configure Inner Self notes");
       return;
     }
     // ==================== AGENT TRIGGER DETECTION ====================
@@ -1245,6 +1273,7 @@ function InnerSelf(hook) {
       IS.encoding = "";
       IS.agent = " ";
       text ||= " ";
+      log("IS", "context no trigger — no configured NPC name in last", config.distance, "actions");
       return;
     } else {
       // Use RNG for tie-breaking name triggers with some priority bias
@@ -1258,6 +1287,7 @@ function InnerSelf(hook) {
           break;
         }
       }
+      log("IS", "context agent triggered:", IS.agent, "| candidates:", possibilities.join(", "));
     }
     // Temporary markers used to reliably identify sections of the context for later calculations
     const boundary = Object.freeze({
@@ -1313,6 +1343,7 @@ function InnerSelf(hook) {
     }
     // Construct the agent instance for the triggered NPC
     const agent = new Agent(IS.agent, { percent: config.percent, indicator: config.indicator });
+    log("IS", "context brain card ready:", agent.name, "| card:", agent.card?.title ?? "unknown");
     // Whitelist of thought labels allowed in this context
     const whitelist = new Set();
     /**
@@ -1426,6 +1457,7 @@ function InnerSelf(hook) {
     // Check if the current turn is a retry or erase + continue following a previous task completion
     if (IS.hash === historyHash()) {
       // Same history, just inject the contextualized brain without a new task
+      log("IS", "context retry/duplicate turn — existing thoughts only, no new task for", IS.agent);
       text = `${nondirective()}${bindSelf(mind
         .map(([label, key, thought]) => `- ${key}: ${thought} [${label}]`)
         .join("\n")
@@ -2056,10 +2088,10 @@ Follow the format **perfectly**.
       text = full ? (
         // Brain is full, prompt for deletion
         `${prompt.directive[pov]}${self}${text.trim()}${boundary.lower}${prompt.forget[pov]}\n\n`
-      ) : ((config.chance / ((config.half && [
+      ) : ((config.chance >= 100 ? 1 : (config.chance / ((config.half && [
         // config.half -> reduce task chance after Do/Say/Story actions (player is driving)
         "do", "say", "story"
-      ].includes(getPrevAction()?.type)) ? 200 : 100)) < Math.random()) ? (
+      ].includes(getPrevAction()?.type)) ? 200 : 100))) < Math.random()) ? (
         // Sometimes do nothing and emit a side effect on IS.agent
         (IS.agent = " "),
         `${nondirective()}${self}${text.trim()} `
@@ -2067,6 +2099,15 @@ Follow the format **perfectly**.
         // Low context = simple prompt, high context = advanced prompt
         (limit < 20000) ? prompt.assign[pov] : prompt.choice[pov]
       )}\n\n`;
+      log("IS", "context thought plan:", IS.agent,
+        full ? "forget-task (brain full)" : (text.includes(boundary.lower) ? "new-thought task injected" : "skipped (chance roll or passive turn)"),
+        "| loaded thoughts:", mind.length,
+        "| chance:", config.chance + "%");
+      if (text.includes(boundary.lower) && IS.agent.trim() && !full) {
+        armISThoughtFrontMemory(IS.agent.trim());
+      } else {
+        disarmISThoughtFrontMemory();
+      }
     }
     // ==================== CONTEXT TRUNCATION ====================
     // Three-phase truncation to fit within AID's context limit
@@ -2153,6 +2194,8 @@ Follow the format **perfectly**.
   } else if ((text.includes(">>>") && text.includes("<<<")) || (3000 < text.length)) {
     // Output contains an Auto-Cards thingy or is suspiciously long
     // Safer to leave untouched
+    log("IS", "output skip — long output or <<<>>> markers, brain parse bypassed",
+      "| len:", text.length, "| agent was:", IS.agent || "none");
     IS.agent = "";
     return;
   }
@@ -2160,6 +2203,7 @@ Follow the format **perfectly**.
   // Process model output and implement brain operations
   /** @type {config} */
   const config = Config.get();
+  const pendingAgentFromContext = (IS.agent || "").trim();
   /**
    * Ensures clean visual separation between actions
    * Only applies after "continue" or "story" actions
@@ -2416,6 +2460,12 @@ I hope you will have lots of fun!
   // Trim IS.agent name before emptiness check
   if (((IS.agent = IS.agent.trim()) === "") && (blocks.length === 0)) {
     // No task expected, but I'm still careful here because AID retries use cached outputs
+    if (pendingAgentFromContext) {
+      log("IS", "output no pending task — context agent was", pendingAgentFromContext,
+        "but IS.agent empty on output (chance skip or desync)");
+    } else {
+      log("IS", "output no pending task — no brain blocks parsed this turn");
+    }
     text = simplify(text).replace(/\n\n\n+/g, "\n\n");
     if (text === "") {
       // Guard against empty string outputs to avoid a known AID bug
@@ -2758,12 +2808,22 @@ I hope you will have lots of fun!
   // Execute queued brain operations and persist changes
   if ((operations.length === 0) || (agent === null)) {
     // No operations to execute, we're done
+    if (agent !== null && blocks.length === 0) {
+      log("IS", "output model ignored thought format for", agent.name,
+        "| expected: (thought_key = `...`) then story",
+        "| hasAnyBracket:", /[(\[{]/.test(text),
+        "| sample:", text.slice(0, 450));
+    }
+    log("IS", "output no brain ops saved",
+      agent?.name ?? IS.agent ?? "none",
+      "| parsed blocks:", blocks.length);
     return;
   }
   const hash = historyHash();
   if (IS.hash === hash) {
     // Same history hash means this turn was a retry or erase + continue
     // This prevents duplicate brain modifications on retry (cached outputs cause problems)
+    log("IS", "output skip — duplicate history (retry/undo), no brain write for", agent.name);
     return;
   } else if (typeof agent.card.entry !== "string") {
     // Initialize the brain card entry if it's not a string (shouldn't happen, but safety first)
@@ -2781,6 +2841,7 @@ I hope you will have lots of fun!
   // Clear the previous encoding since new operations are being committed
   IS.encoding = "";
   // Execute each queued operation and append to the operation log
+  log("IS", "output saving", operations.length, "brain op(s) for", agent.name, "| total ops:", IS.ops + operations.length);
   for (const operation of operations) {
     // Increment global operation counter
     IS.ops++;
@@ -2803,6 +2864,7 @@ I hope you will have lots of fun!
   const keys = Object.keys(brain);
   if (keys.length === 0) {
     agent.card.description = "{}";
+    log("IS", "brain notes cleared (empty) for", agent.name);
     return;
   }
   // Build the JSON-like string manually for each key-value pair
@@ -2824,6 +2886,8 @@ I hope you will have lots of fun!
     appendPair(keys[i]);
   }
   agent.card.description = serialized;
+  log("IS", "brain updated:", agent.name, "| thought keys:", keys.length, "|", keys.slice(0, 5).join(", ") + (5 < keys.length ? "…" : ""));
+  disarmISThoughtFrontMemory();
   return;
 }
 
@@ -8897,8 +8961,19 @@ function onInput_SAE(text) {
 
   text = detectStopGenerating(text);
 
-  if (state.saveOutput && !/\/(?:stop|redo arc)/i.test(text)) {
-    text = "\u200B";
+  text = detectSaeStatus(text);
+
+  if (state.saveOutput && !/\/(?:stop|redo arc|sae status)/i.test(text)) {
+    const isBlank = !text || /^[\u200B-\u200D\s]*$/.test(text);
+    if (isBlank) {
+      text = "\u200B";
+    }
+    else {
+      state.saveOutput = false;
+      state.unlockFeedAIPrompt = false;
+      disarmArcMemoryOverrides();
+      log("SAE arc deferred — player action kept this turn (Do/Say/Story)");
+    }
   }
 
   return text;
@@ -8952,7 +9027,37 @@ function onOutput_SAE(text) {
 }
 
 function helpCommandInput_SAE(text) {
-  if (text.includes("/help sae")) {
+  if (text.includes("/help inner-self") || text.includes("/help inner self")) {
+    text = " ";
+
+    state.commandCenter_SAE =
+      `
+    <<
+    INNER SELF — quick reference (console logs prefixed with "IS")
+    - 🎭 on a brain card = NPC triggered this turn (name mentioned recently)
+    - Blank entry/notes is normal until the first successful "brain op"
+    - Console (Scripting): filter for "IS" to see trigger + thought plan + saves
+
+    Common IS console lines:
+    - "context agent triggered: Leo" — name found in recent story
+    - "context thought plan: … new-thought task injected" — AI asked to form a thought
+    - "context thought plan: … skipped (chance roll)" — no task this turn (raise Thought formation chance in config)
+    - "output saving N brain op(s)" — card entry/notes should update
+    - "output no brain ops saved" — model did not return a valid (thought) block
+    - "context skip — SAE arc generation active" — Inner Self paused during Story Arc Engine
+
+    In-game (Configure Inner Self card):
+    - Enable Inner Self: true
+    - NPC first names in card NOTES (one per line)
+    - Enable debug mode: true — shows task blocks in story text
+    - Show detailed guide: true — prints full guide once on Continue
+    - Thought formation chance: default 60% (lower = fewer thought attempts)
+
+  Also: /help sae for Story Arc Engine commands
+    >>
+    `
+  }
+  else if (text.includes("/help sae")) {
     text = " ";
 
     state.commandCenter_SAE =
@@ -8962,6 +9067,7 @@ function helpCommandInput_SAE(text) {
     - Story Arc Engine calls the AI to create a story arc in the Author's notes to better guide future storytelling.
     - Type "Story Arc" into story cards to access and modify settings. Logs are logged in the notes.
     - Input "/redo arc" to call the AI to regen the story arc.
+    - Input "/sae status" to log arc injection info to Scripting console (use if Inspect is broken).
     - Text encased in << >> are auto cleared from context.
     - Repeated attempts for generating story arcs may be due to AI failing to fulfill instructions or low response length (< 125). Troubleshoot by stopping and retrying in a few turns, or edit your arc prompt in "Story Arc Settings".
 
@@ -8977,6 +9083,33 @@ function helpCommandInput_SAE(text) {
   return text;
 }
 
+function detectSaeStatus(text) {
+  if (!/\/sae\s+status/i.test(text)) {
+    return text;
+  }
+
+  const arcSC = storyCards.find(sc => sc.title === "Current Story Arc");
+  const lineCount = (state.storyArc || "").split("\n").filter(l => /^\d+\.\s/.test(l.trim())).length;
+
+  log("SAE status", {
+    stop_SAE: state.stop_SAE,
+    saveOutput: state.saveOutput,
+    turnNum_SAE: state.turnNum_SAE,
+    storyArcChars: (state.storyArc || "").length,
+    numberedBeats: lineCount,
+    cardEntryChars: arcSC?.entry?.length ?? 0,
+    arcPromptChars: getArcPromptText().length,
+    arcPromptIsArray: Array.isArray(state.arcPrompt),
+    nextArcTurn: state.turnsPerAICall - (state.turnNum_SAE % state.turnsPerAICall)
+  });
+  log("SAE status preview", (state.storyArc || "(empty — generate arc first)").slice(0, 500));
+  log("SAE status tip", "Take a Continue, then check Context Modifier logs for SAE feedStoryArc ok/fallback");
+
+  state.saeLogNextContextArc = true;
+  text = "\u200B";
+  return text;
+}
+
 function helpCommandOutput_SAE(text) {
   if (state.commandCenter_SAE) {
     text = state.commandCenter_SAE;
@@ -8985,8 +9118,24 @@ function helpCommandOutput_SAE(text) {
   return text;
 }
 
+const DEFAULT_ARC_PROMPT = `<<</SYSTEM>  
+- Stop the story.  
+- Only write a structured story arc outline for the future succeeding the current story by following these strict instructions:  
+- Write a numbered list of 11 major events within the story arc.  
+- Each event must be under 7 words.  
+- Events must be in chronological order.  
+- Each event must build on the last and be further in the future.  
+- Dont write clichés, dialogue, description, and prose.  
+- Dont write the protagonist, main character, and player.  
+- Use only brief, non rigid, high-level story developments.  
+- Events contain turning points, twists, discoveries, conflicts, motives, and lore.  
+- Maintain immersion and consistent narrative tone.>>`;
+
 function unwrapArcPrompt(raw) {
-  let text = (Array.isArray(raw) ? raw.join("\n") : String(raw || "")).trim();
+  let text = (Array.isArray(raw) ? raw.join("\n") : String(raw ?? "")).trim();
+  if (text === "" || text === "undefined") {
+    return "";
+  }
   if (text.startsWith("<<<")) {
     text = text.slice(3);
   } else if (text.startsWith("<<")) {
@@ -8998,8 +9147,13 @@ function unwrapArcPrompt(raw) {
   return text.trim();
 }
 
+function normalizeArcPrompt(raw) {
+  const unwrapped = unwrapArcPrompt(raw);
+  return unwrapped || unwrapArcPrompt(DEFAULT_ARC_PROMPT);
+}
+
 function getArcPromptText() {
-  return unwrapArcPrompt(state.arcPrompt);
+  return normalizeArcPrompt(state.arcPrompt);
 }
 
 function parseArcPromptFromSettingsEntry(entry) {
@@ -9010,20 +9164,8 @@ function parseArcPromptFromSettingsEntry(entry) {
   return unwrapArcPrompt(match[1]);
 }
 
-// Prompt to be fed to AI context (plain text in memory; << >> in settings card is optional wrapper)
-state.arcPrompt = state.arcPrompt || unwrapArcPrompt(`
-<<</SYSTEM>  
-- Stop the story.  
-- Only write a structured story arc outline for the future succeeding the current story by following these strict instructions:  
-- Write a numbered list of 11 major events within the story arc.  
-- Each event must be under 7 words.  
-- Events must be in chronological order.  
-- Each event must build on the last and be further in the future.  
-- Dont write clichés, dialogue, description, and prose.  
-- Dont write the protagonist, main character, and player.  
-- Use only brief, non rigid, high-level story developments.  
-- Events contain turning points, twists, discoveries, conflicts, motives, and lore.  
-- Maintain immersion and consistent narrative tone.>>`);
+// Plain string only — do not wrap in [...]; arrays break settings card round-trip
+state.arcPrompt = normalizeArcPrompt(state.arcPrompt);
 
 // Initialize variables
 if (state.stop_SAE == undefined) {
@@ -9123,8 +9265,9 @@ function createIfNoSettingsSC() {
 function storeSettingsToSC() {
   // Fetch the sc
   const settingsSC = storyCards.find(sc => sc.title === "Story Arc Settings");
+  const promptForCard = `<<${getArcPromptText()}>>`;
 
-  settingsSC.entry = `stop_SAE = ${state.stop_SAE}\nturnsPerAICall = ${state.turnsPerAICall}\nattemptLimit = ${state.attemptLimit}\nturnsPerElemRemoval = ${state.turnsPerElemRemoval}\narcPrompt = ${state.arcPrompt}`
+  settingsSC.entry = `stop_SAE = ${state.stop_SAE}\nturnsPerAICall = ${state.turnsPerAICall}\nattemptLimit = ${state.attemptLimit}\nturnsPerElemRemoval = ${state.turnsPerElemRemoval}\narcPrompt = ${promptForCard}`
 }
 
 function retrieveSettingsFromSC() {
@@ -9164,6 +9307,11 @@ function retrieveSettingsFromSC() {
   const parsedPrompt = parseArcPromptFromSettingsEntry(settingsSC.entry);
   if (parsedPrompt) {
     state.arcPrompt = parsedPrompt;
+  }
+
+  state.arcPrompt = normalizeArcPrompt(state.arcPrompt);
+  if (!parsedPrompt && settingsSC.entry && !/arcPrompt\s*=/i.test(settingsSC.entry)) {
+    log("SAE arcPrompt — using default (missing or invalid arcPrompt in Story Arc Settings)");
   }
 
 }
@@ -9399,12 +9547,42 @@ function saveStoryArc(text) {
 
 // Feeds the Story Arc into the Author's Note in the AI context every turn
 function feedStoryArc(text) {
-  // Ensure story arc is fed only when a new story arc is not being generated
-  if (state.saveOutput == false) {
-    text = text.replace(
-      /(\[Author's note: [\s\S]*?)(])/,
-      (_, noteStart, noteEnd) => noteStart + "\n" + state.storyArc + noteEnd
-    );
+  if (state.saveOutput) {
+    return text;
+  }
+
+  const arc = (state.storyArc || "").trim();
+  if (!arc) {
+    log("SAE feedStoryArc skip — no arc saved (Current Story Arc empty)");
+    return text;
+  }
+
+  const injection = "\n" + arc;
+  const authorNoteRe = /(\[Author's note:[\s\S]*?)(])/i;
+
+  if (authorNoteRe.test(text)) {
+    text = text.replace(authorNoteRe, (_, noteStart, noteEnd) => noteStart + injection + noteEnd);
+    log("SAE feedStoryArc ok — Author's note block", arc.length, "chars", state.saeLogNextContextArc ? arc.slice(0, 300) : "");
+  }
+  else {
+    const recentMatch = text.match(/Recent Story:/i);
+    if (recentMatch) {
+      const idx = text.indexOf(recentMatch[0]);
+      text = `${text.slice(0, idx)}\n[Story Arc Engine beats]\n${arc}\n\n${text.slice(idx)}`;
+      log("SAE feedStoryArc fallback — before Recent Story (no [Author's note:] found)", arc.length, "chars");
+    }
+    else {
+      text = `${text}\n\n[Story Arc Engine beats]\n${arc}`;
+      log("SAE feedStoryArc fallback — appended to context end", arc.length, "chars");
+    }
+    if (state.saeLogNextContextArc) {
+      log("SAE feedStoryArc preview", arc.slice(0, 300));
+    }
+  }
+
+  if (state.saeLogNextContextArc) {
+    log("SAE feedStoryArc context has Write the story:", text.includes("Write the story in the following direction"));
+    delete state.saeLogNextContextArc;
   }
 
   return text;
