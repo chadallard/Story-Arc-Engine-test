@@ -1,15 +1,13 @@
 # Story Arc Engine + Inner Self
 
-A combined **AI Dungeon** scenario script that merges two community mods into one install:
+**Community integration that runs [Story Arc Engine](https://github.com/Yi1i1i/Story-Arc-Engine) and [Inner Self](https://github.com/LewdLeah/Inner-Self) in one AI Dungeon scenario.**
 
+This is **not** an official release from either upstream author. It is an unofficial bundle maintained here for a single-scenario install. See [Credits & upstream](#credits--upstream) and [LICENSE](LICENSE) / [NOTICE](NOTICE).
 
 | Upstream project                                                             | What it does                                                                                                                                                    |
 | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **[Story Arc Engine](https://github.com/Yi1i1i/Story-Arc-Engine)** by Yi1i1i | Periodically calls the AI to build an 11-point story arc, stored in Author's Notes and story cards, so long adventures stay structured and coherent.            |
 | **[Inner Self](https://github.com/LewdLeah/Inner-Self)** by LewdLeah         | Gives NPCs private “brains” (story card notes), name-based triggers, goals, memory, and self-reflection. Optional Auto-Cards support is bundled in the library. |
-
-
-This repository is a **fork / integration** of those projects. It is intended for public use. Please respect upstream authors and licenses when you share or adapt it.
 
 ---
 
@@ -63,7 +61,7 @@ Do not swap hook order unless you know what you are changing — arc generation 
 
 ## Changes in this integration
 
-This fork wires the two mods together and fixes a few issues that show up when they share the same scenario. You do not need to edit `library.js` for normal play — these are behaviors already in the bundled scripts.
+This integration wires the two mods together and fixes a few issues that show up when they share the same scenario. You do not need to edit `library.js` for normal play — these are behaviors already in the bundled scripts.
 
 ### New commands
 
@@ -159,16 +157,22 @@ Edit `**Current Story Arc`** anytime to view or manually adjust the active arc (
 
 ## Credits & upstream
 
-This integration would not exist without the original projects. Please star and support them:
+This integration would not exist without the original projects. Please star and support them.
 
+**Disclaimer:** This repository is a **community integration**. It is **not affiliated with, endorsed by, or maintained by** Yi1i1i (Story Arc Engine) or LewdLeah (Inner Self). Bugs in the combined install should be reported here; issues that reproduce in a single upstream project alone should go to that upstream repo.
 
-| Project           | Author                                                                                 | Repository                                                                                                                                                 |
-| ----------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Story Arc Engine  | Yi1i1i (with thanks to LewdLeah & Purplejump for ideas, debugging, and testing on SAE) | [https://github.com/Yi1i1i/Story-Arc-Engine](https://github.com/Yi1i1i/Story-Arc-Engine)                                                                   |
-| Inner Self v1.0.2 | LewdLeah                                                                               | [https://github.com/LewdLeah/Inner-Self](https://github.com/LewdLeah/Inner-Self) ([MIT License](https://github.com/LewdLeah/Inner-Self/blob/main/LICENSE)) |
+| Project           | Author                                                                                 | Repository                                                                                                                                                 | License |
+| ----------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| Story Arc Engine  | Yi1i1i (with thanks to LewdLeah & Purplejump for ideas, debugging, and testing on SAE) | [github.com/Yi1i1i/Story-Arc-Engine](https://github.com/Yi1i1i/Story-Arc-Engine)                                                                         | No `LICENSE` file upstream as of this bundle; keep attribution (see [NOTICE](NOTICE)) |
+| Inner Self v1.0.2 | LewdLeah                                                                               | [github.com/LewdLeah/Inner-Self](https://github.com/LewdLeah/Inner-Self)                                                                                   | [MIT](https://github.com/LewdLeah/Inner-Self/blob/main/LICENSE) |
 
+**This repo** combines and maintains those scripts for a single-scenario install.
 
-**This repo** combines and maintains those scripts for a single-scenario install. If you redistribute or publish a scenario using this bundle, keep attribution visible (e.g. in your scenario description or credits) and comply with [Inner Self’s MIT license](https://github.com/LewdLeah/Inner-Self/blob/main/LICENSE) for the Inner Self / Auto-Cards portions.
+- **Integration layer** (`input.js`, `context.js`, `output.js`, and compatibility changes in `library.js`) — [MIT](LICENSE)
+- **Inner Self / Auto-Cards portions** — MIT; full notice in [NOTICE](NOTICE)
+- **Story Arc Engine portions** — derived from Yi1i1i’s project; attribution required (see [NOTICE](NOTICE))
+
+If you redistribute or publish a scenario using this bundle, keep attribution visible (scenario description, credits, or a copy of [NOTICE](NOTICE)).
 
 ---
 
@@ -176,5 +180,4 @@ This integration would not exist without the original projects. Please star and 
 
 - [Story Arc Engine (upstream)](https://github.com/Yi1i1i/Story-Arc-Engine) · [WIP scenario on AI Dungeon](https://play.aidungeon.com/scenario/piAUFAqzm2xZ/story-arc-engine-wip)
 - [Inner Self (upstream)](https://github.com/LewdLeah/Inner-Self) · [Demo scenario](https://play.aidungeon.com/scenario/tsu1WMJXaaAZ/inner-self)
-- [AI Dungeon scripting help](https://help.aidungeon.com/scripting)
 

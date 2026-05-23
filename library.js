@@ -3374,7 +3374,7 @@ function AutoCards(inHook, inText, inStop) {
   Idea for the redoCard API function and "/ac redo" in-game command
 
   A note to future individuals:
-  If you fork or modify Auto-Cards... Go ahead and put your name here too! Yay! 🥰
+  If you modify Auto-Cards... Go ahead and put your name here too! Yay! 🥰
   */
 
   //—————————————————————————————————————————————————————————————————————————————————
