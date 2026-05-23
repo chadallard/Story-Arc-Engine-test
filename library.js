@@ -3,7 +3,7 @@
 /**
  * Main control panel for scenario creator convenience
  * Settings defined here will override their counterparts elsewhere
- * Most AC and Inner Self settings are included
+ * Most AC, Inner Self, and Story Arc Engine settings are included
  * Safe to delete
  */
 globalThis.MainSettings = (class MainSettings {
@@ -71,6 +71,17 @@ globalThis.MainSettings = (class MainSettings {
     IS_AC_ENABLED_BY_DEFAULT: false
     // (true or false)
     ,
+  }; //——————————————————————————————————————————————————————————————————————————————
+
+  /**
+   * Story Arc Engine
+   * Made by Yi1i1i
+   * Periodically calls the AI to generate a story arc stored in Author's Notes and story cards
+   * Credits: LewdLeah (AI-calling concept, debugging, testing, feedback), Purplejump (testing, feedback)
+   * https://github.com/Yi1i1i/Story-Arc-Engine
+   */
+  static StoryArcEngine = {
+    // Tune during play via the "Story Arc Settings" story card (turnsPerAICall, arcPrompt, etc.).
   }; //——————————————————————————————————————————————————————————————————————————————
 
   /**
@@ -8925,17 +8936,16 @@ function AutoCards(inHook, inText, inStop) {
 
 // =============================================================================
 // Story Arc Engine (SAE) — combined with Inner Self
-// https://github.com/LewdLeah/Inner-Self + Story Arc Engine by Yi1i1i
+// https://github.com/LewdLeah/Inner-Self + https://github.com/Yi1i1i/Story-Arc-Engine
 // =============================================================================
 
-// Library Script
-
-// Story Arc Engine Script by Yi1i1i
-
-/* Credits: 
-  LewdLeah - Idea for AI calling, debugging, testing, feedback
-  Purplejump - Testing, feedback
-*/
+/**
+ * Story Arc Engine
+ * Made by Yi1i1i
+ * Periodically calls the AI to generate a story arc stored in Author's Notes and story cards
+ * Credits: LewdLeah (AI-calling concept, debugging, testing, feedback), Purplejump (testing, feedback)
+ * https://github.com/Yi1i1i/Story-Arc-Engine
+ */
 
 onLibrary_SAE();
 function onLibrary_SAE() {
