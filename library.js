@@ -8947,7 +8947,6 @@ function AutoCards(inHook, inText, inStop) {
  * https://github.com/Yi1i1i/Story-Arc-Engine
  */
 
-onLibrary_SAE();
 function onLibrary_SAE() {
   // Update settingsSC at start of every hook
   createIfNoSettingsSC();
@@ -9208,6 +9207,8 @@ state.turnsPerElemRemoval = state.turnsPerElemRemoval || 3;
 
 state.turnsPerAICall = state.turnsPerAICall || 35;
 log("state.turnsPerAICall: " + state.turnsPerAICall);
+
+onLibrary_SAE();
 
 // SAE Functions
 // Increment turn counter at end of onOutput
