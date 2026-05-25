@@ -9272,7 +9272,7 @@ function retrieveArcFromSC() {
   // Fetch the sc
   const arcSC = storyCards.find(sc => sc.title === "Current Story Arc");
 
-  state.storyArc = arcSC.entry;
+  state.storyArc = normalizeStoryArcHeader(arcSC.entry);
 }
 
 function createIfNoSettingsSC() {
@@ -9554,6 +9554,20 @@ function isValidStoryArc(lines) {
   return lines.length >= minEvents;
 }
 
+const SAE_ARC_HEADER = "Plot obligations — advance this Continue toward beat 1; do not skip or resolve later beats yet:";
+const SAE_ARC_HEADER_LEGACY = /^Write the story in the following direction:\s*/i;
+
+function normalizeStoryArcHeader(arcText) {
+  let arc = String(arcText || "").trim();
+  if (!arc) {
+    return arc;
+  }
+  if (SAE_ARC_HEADER_LEGACY.test(arc)) {
+    arc = arc.replace(SAE_ARC_HEADER_LEGACY, `${SAE_ARC_HEADER}\n`);
+  }
+  return arc;
+}
+
 // After AI call and prompt is fed to context, this function saves the generated story arc during the following output hook
 function saveStoryArc(text) {
   if (state.saveOutput) {
@@ -9587,7 +9601,7 @@ function saveStoryArc(text) {
       state.attemptCounter = 0;
       disarmArcMemoryOverrides();
 
-      state.storyArc = "Write the story in the following direction:\n" + outputtedArc;
+      state.storyArc = `${SAE_ARC_HEADER}\n${outputtedArc}`;
 
       text = "\n<< ✅ Story Arc generated and saved! Click 'Continue'. >>\n\n";
 
@@ -9667,11 +9681,7 @@ function buildArcContextBlock() {
     ].filter(line => line !== "").join("\n");
   }
   else {
-    const arc = (state.storyArc || "").trim();
-    body = arc.replace(
-      /^Write the story in the following direction:\s*/i,
-      "Follow these plot beats in order (emphasize beat 1 this Continue):\n"
-    );
+    body = normalizeStoryArcHeader(state.storyArc);
   }
 
   return [
