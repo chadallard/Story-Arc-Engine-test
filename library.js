@@ -9085,6 +9085,9 @@ function helpCommandInput_SAE(text) {
     - arcPrompt: Prompt that is fed to the AI to generate a story arc. Must be encased in << >>.
     - attemptLimit: Number of attempts at generating story arc before stopping.
     - turnsPerElemRemoval: Number of turns before removing the first plot point to progress the arc. Set to 0 to turn off removal.
+    - refreshArcWhenDepleted: true = refresh arc only after all numbered beats are removed (ignores turnsPerAICall). false = use turnsPerAICall timer.
+    - arcBeatFocus: full | current | currentPlusNext — how many beats to inject (current = strongest adherence to beat 1).
+    - arcPlacement: authorNote | beforeRecentStory — beforeRecentStory puts beats right above Recent Story (recommended).
     >>
     `
   }
@@ -9109,7 +9112,12 @@ function detectSaeStatus(text) {
     cardEntryChars: arcSC?.entry?.length ?? 0,
     arcPromptChars: getArcPromptText().length,
     arcPromptIsArray: Array.isArray(state.arcPrompt),
-    nextArcTurn: state.turnsPerAICall - (state.turnNum_SAE % state.turnsPerAICall)
+    refreshArcWhenDepleted: state.refreshArcWhenDepleted,
+    arcBeatFocus: state.arcBeatFocus,
+    arcPlacement: state.arcPlacement,
+    nextArcTurn: state.refreshArcWhenDepleted
+      ? "when arc has no numbered beats left"
+      : state.turnsPerAICall - (state.turnNum_SAE % state.turnsPerAICall)
   });
   log("SAE status preview", (state.storyArc || "(empty — generate arc first)").slice(0, 500));
   log("SAE status tip", "Take a Continue, then check Context Modifier logs for SAE feedStoryArc ok/fallback");
@@ -9205,6 +9213,18 @@ state.attemptLimit = state.attemptLimit || 3;
 
 state.turnsPerElemRemoval = state.turnsPerElemRemoval || 3;
 
+if (state.refreshArcWhenDepleted === undefined) {
+  state.refreshArcWhenDepleted = false;
+}
+
+if (state.arcBeatFocus === undefined) {
+  state.arcBeatFocus = "current";
+}
+
+if (state.arcPlacement === undefined) {
+  state.arcPlacement = "beforeRecentStory";
+}
+
 state.turnsPerAICall = state.turnsPerAICall || 35;
 log("state.turnsPerAICall: " + state.turnsPerAICall);
 
@@ -9269,6 +9289,9 @@ function createIfNoSettingsSC() {
     arcPrompt: Prompt that is fed to the AI to generate a story arc. Must be encased in << >>.
     attemptLimit: Number of attempts at generating story arc before stopping.
     turnsPerElemRemoval: Number of turns before removing the first plot point to progress the arc. Set to 0 to turn off removal.
+    refreshArcWhenDepleted: true = refresh arc only after all numbered beats are removed (ignores turnsPerAICall). false = use turnsPerAICall timer.
+    arcBeatFocus: full | current | currentPlusNext — how many beats to inject (current = strongest adherence to beat 1).
+    arcPlacement: authorNote | beforeRecentStory — beforeRecentStory puts beats right above Recent Story (recommended).
     `;
   }
 }
@@ -9278,7 +9301,7 @@ function storeSettingsToSC() {
   const settingsSC = storyCards.find(sc => sc.title === "Story Arc Settings");
   const promptForCard = `<<${getArcPromptText()}>>`;
 
-  settingsSC.entry = `stop_SAE = ${state.stop_SAE}\nturnsPerAICall = ${state.turnsPerAICall}\nattemptLimit = ${state.attemptLimit}\nturnsPerElemRemoval = ${state.turnsPerElemRemoval}\narcPrompt = ${promptForCard}`
+  settingsSC.entry = `stop_SAE = ${state.stop_SAE}\nturnsPerAICall = ${state.turnsPerAICall}\nattemptLimit = ${state.attemptLimit}\nturnsPerElemRemoval = ${state.turnsPerElemRemoval}\nrefreshArcWhenDepleted = ${state.refreshArcWhenDepleted}\narcBeatFocus = ${state.arcBeatFocus}\narcPlacement = ${state.arcPlacement}\narcPrompt = ${promptForCard}`
 }
 
 function retrieveSettingsFromSC() {
@@ -9315,6 +9338,24 @@ function retrieveSettingsFromSC() {
     state.turnsPerElemRemoval = Number(removalMatch[1]) ?? state.turnsPerElemRemoval;
   }
 
+  const depletedMatch = settingsSC.entry.match(/refreshArcWhenDepleted\s*=\s*([A-Za-z]+)/);
+  if (depletedMatch) {
+    state.refreshArcWhenDepleted = depletedMatch[1].toLowerCase() === "true";
+  }
+
+  const focusMatch = settingsSC.entry.match(/arcBeatFocus\s*=\s*(\w+)/i);
+  if (focusMatch) {
+    state.arcBeatFocus = normalizeArcBeatFocus(focusMatch[1]);
+  }
+
+  const placementMatch = settingsSC.entry.match(/arcPlacement\s*=\s*(\w+)/i);
+  if (placementMatch) {
+    state.arcPlacement = normalizeArcPlacement(placementMatch[1]);
+  }
+
+  state.arcBeatFocus = normalizeArcBeatFocus(state.arcBeatFocus);
+  state.arcPlacement = normalizeArcPlacement(state.arcPlacement);
+
   const parsedPrompt = parseArcPromptFromSettingsEntry(settingsSC.entry);
   if (parsedPrompt) {
     state.arcPrompt = parsedPrompt;
@@ -9327,12 +9368,30 @@ function retrieveSettingsFromSC() {
 
 }
 
+function countArcBeats(arcText) {
+  return String(arcText || "").split("\n").filter(l => /^\d+\.\s/.test(l.trim())).length;
+}
+
+function shouldScheduleArcRefresh() {
+  if (state.turnNum_SAE === 1) {
+    return true;
+  }
+  if (state.refreshArcWhenDepleted) {
+    if (state.turnsPerElemRemoval === 0) {
+      log("SAE refreshArcWhenDepleted ignored — turnsPerElemRemoval is 0");
+      return state.turnNum_SAE % state.turnsPerAICall === 0;
+    }
+    return countArcBeats(state.storyArc) === 0;
+  }
+  return state.turnNum_SAE % state.turnsPerAICall === 0;
+}
+
 // On output, waits for the correct turn to call AI for generating story arc
 function callAIForArc(text) {
   if (state.saveOutput) {
     return text;
   }
-  if (state.turnNum_SAE == 1 || state.turnNum_SAE % state.turnsPerAICall === 0) {
+  if (shouldScheduleArcRefresh()) {
     // Warn player of AI call next turn
     text = text + "\n\n<< ⚠️ Updating Story Arc Next Turn! Click 'Continue' or type '/stop'. >>";
 
@@ -9556,43 +9615,136 @@ function saveStoryArc(text) {
   return text;
 }
 
-// Feeds the Story Arc into the Author's Note in the AI context every turn
+const SAE_ARC_BLOCK_START = "=== STORY ARC ENGINE — plot obligations ===";
+const SAE_ARC_BLOCK_END = "=== END STORY ARC ENGINE ===";
+
+function parseArcBeatLines(arcText) {
+  return String(arcText || "").split("\n")
+    .map(line => line.trim())
+    .filter(line => /^\d+\.\s/.test(line));
+}
+
+function normalizeArcBeatFocus(raw) {
+  const key = String(raw || "current").toLowerCase().replace(/[_\s-]/g, "");
+  if (key === "full" || key === "all") {
+    return "full";
+  }
+  if (key === "currentplusnext" || key === "currentnext" || key === "next") {
+    return "currentPlusNext";
+  }
+  return "current";
+}
+
+function normalizeArcPlacement(raw) {
+  const key = String(raw || "beforeRecentStory").toLowerCase().replace(/[_\s-]/g, "");
+  if (key === "authornote" || key === "note") {
+    return "authorNote";
+  }
+  return "beforeRecentStory";
+}
+
+function buildArcContextBlock() {
+  const beats = parseArcBeatLines(state.storyArc);
+  const focus = normalizeArcBeatFocus(state.arcBeatFocus);
+  let body;
+
+  if (focus === "current" && beats.length > 0) {
+    const current = beats[0].replace(/^\d+\.\s*/, "");
+    body = [
+      "CURRENT PLOT TARGET — advance this Continue toward:",
+      `• ${current}`,
+      beats.length > 1 ? "(Other beats stay in Current Story Arc; do not skip ahead.)" : ""
+    ].filter(line => line !== "").join("\n");
+  }
+  else if (focus === "currentPlusNext" && beats.length > 0) {
+    const current = beats[0].replace(/^\d+\.\s*/, "");
+    const next = beats[1] ? beats[1].replace(/^\d+\.\s*/, "") : "";
+    body = [
+      "CURRENT PLOT TARGET:",
+      `• ${current}`,
+      next ? `NEXT (foreshadow only; do not resolve yet): ${next}` : "",
+      beats.length > 2 ? "(Further beats in Current Story Arc; stay on current.)" : ""
+    ].filter(line => line !== "").join("\n");
+  }
+  else {
+    const arc = (state.storyArc || "").trim();
+    body = arc.replace(
+      /^Write the story in the following direction:\s*/i,
+      "Follow these plot beats in order (emphasize beat 1 this Continue):\n"
+    );
+  }
+
+  return [
+    SAE_ARC_BLOCK_START,
+    "Plot guidance overrides vague improvisation. Weave the current beat into concrete story action.",
+    body,
+    SAE_ARC_BLOCK_END
+  ].join("\n");
+}
+
+function stripPriorArcContextBlocks(text) {
+  const blockRe = new RegExp(
+    SAE_ARC_BLOCK_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      + "[\\s\\S]*?"
+      + SAE_ARC_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      + "\\s*",
+    "gi"
+  );
+  return text.replace(blockRe, "").replace(/\[Story Arc Engine beats\][\s\S]*?(?=\n\nRecent Story:|\n\n<|\n\n$)/gi, "");
+}
+
+function injectArcBeforeRecentStory(text, block) {
+  text = stripPriorArcContextBlocks(text);
+  const recentMatch = text.match(/Recent Story:/i);
+  if (recentMatch) {
+    const idx = text.indexOf(recentMatch[0]);
+    return `${text.slice(0, idx)}\n\n${block}\n\n${text.slice(idx)}`;
+  }
+  const storyMarker = text.indexOf("<|story|>");
+  if (storyMarker !== -1) {
+    return `${text.slice(0, storyMarker)}\n\n${block}\n\n${text.slice(storyMarker)}`;
+  }
+  return `${text}\n\n${block}`;
+}
+
+// Feeds story arc guidance into AI context every turn
 function feedStoryArc(text) {
   if (state.saveOutput) {
     return text;
   }
 
-  const arc = (state.storyArc || "").trim();
-  if (!arc) {
+  if (!(state.storyArc || "").trim()) {
     log("SAE feedStoryArc skip — no arc saved (Current Story Arc empty)");
     return text;
   }
 
-  const injection = "\n" + arc;
-  const authorNoteRe = /(\[Author's note:[\s\S]*?)(])/i;
+  state.arcBeatFocus = normalizeArcBeatFocus(state.arcBeatFocus);
+  state.arcPlacement = normalizeArcPlacement(state.arcPlacement);
 
-  if (authorNoteRe.test(text)) {
-    text = text.replace(authorNoteRe, (_, noteStart, noteEnd) => noteStart + injection + noteEnd);
-    log("SAE feedStoryArc ok — Author's note block", arc.length, "chars", state.saeLogNextContextArc ? arc.slice(0, 300) : "");
-  }
-  else {
-    const recentMatch = text.match(/Recent Story:/i);
-    if (recentMatch) {
-      const idx = text.indexOf(recentMatch[0]);
-      text = `${text.slice(0, idx)}\n[Story Arc Engine beats]\n${arc}\n\n${text.slice(idx)}`;
-      log("SAE feedStoryArc fallback — before Recent Story (no [Author's note:] found)", arc.length, "chars");
+  const block = buildArcContextBlock();
+  const placement = state.arcPlacement;
+
+  if (placement === "authorNote") {
+    text = stripPriorArcContextBlocks(text);
+    const injection = "\n" + block;
+    const authorNoteRe = /(\[Author's note:[\s\S]*?)(])/i;
+
+    if (authorNoteRe.test(text)) {
+      text = text.replace(authorNoteRe, (_, noteStart, noteEnd) => noteStart + injection + noteEnd);
+      log("SAE feedStoryArc ok — authorNote", block.length, "focus", state.arcBeatFocus);
     }
     else {
-      text = `${text}\n\n[Story Arc Engine beats]\n${arc}`;
-      log("SAE feedStoryArc fallback — appended to context end", arc.length, "chars");
+      text = injectArcBeforeRecentStory(text, block);
+      log("SAE feedStoryArc fallback — beforeRecentStory (no Author's note block)", block.length);
     }
-    if (state.saeLogNextContextArc) {
-      log("SAE feedStoryArc preview", arc.slice(0, 300));
-    }
+  }
+  else {
+    text = injectArcBeforeRecentStory(text, block);
+    log("SAE feedStoryArc ok — beforeRecentStory", block.length, "focus", state.arcBeatFocus);
   }
 
   if (state.saeLogNextContextArc) {
-    log("SAE feedStoryArc context has Write the story:", text.includes("Write the story in the following direction"));
+    log("SAE feedStoryArc preview", block.slice(0, 400));
     delete state.saeLogNextContextArc;
   }
 

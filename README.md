@@ -13,7 +13,7 @@ This is **not** an official release from either upstream author. It is an unoffi
 
 ## What you get
 
-- **Plot guidance** — Story Arc Engine warns before arc turns, generates the arc, and injects it into context on a schedule you control.
+- **Plot guidance** — Story Arc Engine warns before arc turns, generates the arc, and injects active beats into context on a schedule you control (this bundle defaults to focused injection above **Recent Story** so beats are followed more reliably than upstream Author's Note-only injection).
 - **Character minds** — Inner Self maintains per-NPC mental state, with zero “press Continue for the mod” prompts during normal play.
 - **Single library** — One `library.js` paste contains Inner Self, Auto-Cards hooks, and Story Arc Engine logic.
 
@@ -67,7 +67,7 @@ This integration wires the two mods together and fixes a few issues that show up
 
 | Command | What it does |
 | ------- | ------------ |
-| `/sae status` | Logs arc stats to the **Scripting** console (beat count, next arc turn, `arcPrompt` length). On the next **Continue**, context logs whether beats were injected into Author's Note or a fallback path. Use this if **Inspect** is broken. |
+| `/sae status` | Logs arc stats to the **Scripting** console (beat count, `arcBeatFocus`, `arcPlacement`, next arc refresh). On the next **Continue**, context logs how beats were injected. Use this if **Inspect** is broken. |
 | `/help inner-self` | Prints a short Inner Self reference in-game (same family as `/help sae`). |
 
 ### Story Arc Engine fixes & behavior
@@ -76,9 +76,10 @@ This integration wires the two mods together and fixes a few issues that show up
 - **Arc generation turns** — Inner Self context/thought work is skipped while SAE owns the turn (`saveOutput`). Context is trimmed to an arc-focused view; the arc prompt is re-fed each pass until generation finishes.
 - **Input during arc gen** — Blank **Continue** still advances arc generation; real **Do** / **Say** / **Story** input cancels that arc turn and is kept (logged as `SAE arc deferred`).
 - **Arc parsing** — Accepts numbered lists by line count (configurable minimum), with fallbacks if the model wraps output in prose.
-- **Beat injection** — Tries Author's Note first; if your build has no `[Author's note:]` block, falls back to inserting before **Recent Story** or appending to context end.
+- **Beat injection (integration default)** — Upstream SAE appended the full arc into Author's Note every turn. Models often ignored beats because the list was long, buried, and softly worded. This bundle **defaults to `arcBeatFocus = current` and `arcPlacement = beforeRecentStory`**: only beat #1 is injected, in a marked block immediately above **Recent Story**, with stronger plot-obligation wording. The full arc is still stored on **Current Story Arc** for editing and removal pacing. Set `arcBeatFocus = full` and `arcPlacement = authorNote` to restore upstream-style injection.
 - **`arcPrompt` settings** — Must be a plain string in **Story Arc Settings** (`arcPrompt = <<...>>`), not a JavaScript `[...]` array. Arrays broke round-trip saves and left `arcPrompt = undefined` on the card; the library now normalizes and rewrites the prompt when hooks run.
 - **Settings card** — Arc settings are no longer mirrored into card notes (that was bloating **Story Arc Settings**).
+- **`refreshArcWhenDepleted`** — Optional pacing mode: when `true`, the arc refresh runs only after all numbered beats have been removed (`turnsPerElemRemoval` must not be `0`). Ignores `turnsPerAICall` while enabled.
 
 ### Inner Self fixes & behavior
 
@@ -103,18 +104,21 @@ Before a scheduled arc turn you may see a warning; the next turn is used to gene
 
 ### Pacing & beats
 
-Open `**Story Arc Settings`** after your adventure starts (the card is created automatically). Edit values in the card **entry** — changes apply on the next turn.
+Open **Story Arc Settings** after your adventure starts (the card is created automatically). Edit values in the card **entry** — changes apply on the next turn.
 
+| Setting | What it does | Default (this bundle) |
+| -------- | ------------ | --------------------- |
+| `turnsPerAICall` | Turns between AI calls to refresh the story arc (used when `refreshArcWhenDepleted = false`) | `35` |
+| `turnsPerElemRemoval` | Turns between removals of beat #1 from the arc (set `0` to disable). Does **not** control injection — the full arc lives on **Current Story Arc**; this controls when #1 is dropped so #2 becomes current. | `3` |
+| `refreshArcWhenDepleted` | `true` = refresh the arc only after every numbered beat has been removed. `false` = use `turnsPerAICall` on a timer. Requires `turnsPerElemRemoval` > 0 when `true`. | `false` |
+| `arcBeatFocus` | How many beats to inject into context: `full` (entire list), `current` (beat #1 only), `currentPlusNext` (#1 plus light foreshadow of #2). | `current` |
+| `arcPlacement` | Where to inject: `beforeRecentStory` (recommended; block sits above **Recent Story**), `authorNote` (append inside `[Author's note:]`). | `beforeRecentStory` |
 
-| Setting                   | What it does                                                             | Default |
-| ------------------------- | ------------------------------------------------------------------------ | ------- |
-| `**turnsPerAICall`**      | Turns between AI calls to refresh the story arc                          | `35`    |
-| `**turnsPerElemRemoval**` | Turns before the first plot point drops off the arc (set `0` to disable) | `3`     |
+To **slow the story down** and linger on beats longer, **raise** `turnsPerElemRemoval` and/or enable `refreshArcWhenDepleted` so a full arc cycle finishes before the next AI refresh.
 
+**Upstream vs this bundle:** Yi1i1i's original SAE defaults effectively injected the **full** arc into Author's Note. If beats felt ignored despite good logs, try the bundled defaults first; revert with `arcBeatFocus = full` and `arcPlacement = authorNote`.
 
-To **slow the story down** and linger on beats longer, **raise both values**. For example, higher `turnsPerAICall` means fewer arc refreshes; higher `turnsPerElemRemoval` means each plot point stays on the arc longer before advancing.
-
-You can also edit `**arcPrompt`**, `**attemptLimit**`, and `**stop_SAE**` in the same card. Type `**/help sae**` for the full field reference.
+You can also edit `arcPrompt`, `attemptLimit`, and `stop_SAE` in the same card. Type `/help sae` for the full field reference.
 
 ---
 
@@ -147,7 +151,7 @@ Both mods create in-game story cards when you play. Use those cards to configure
 
 | Mod                  | Settings card          | What you can change                                                             |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------- |
-| **Story Arc Engine** | `Story Arc Settings`   | Arc refresh interval, plot-point pacing, arc prompt, attempt limit, disable SAE |
+| **Story Arc Engine** | `Story Arc Settings`   | Arc refresh interval, plot-point pacing, beat focus/placement, refresh-when-depleted, arc prompt, attempt limit, disable SAE |
 | **Inner Self**       | `Configure Inner Self` | Enable/disable, NPC list, thought chance, debug mode, Auto-Cards, and more      |
 
 
