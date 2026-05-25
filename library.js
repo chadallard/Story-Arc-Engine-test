@@ -9228,6 +9228,20 @@ if (state.arcPlacement === undefined) {
 state.turnsPerAICall = state.turnsPerAICall || 35;
 log("state.turnsPerAICall: " + state.turnsPerAICall);
 
+const SAE_ARC_HEADER = "Plot obligations — advance this Continue toward beat 1; do not skip or resolve later beats yet:";
+const SAE_ARC_HEADER_LEGACY = /^Write the story in the following direction:\s*/i;
+
+function normalizeStoryArcHeader(arcText) {
+  let arc = String(arcText || "").trim();
+  if (!arc) {
+    return arc;
+  }
+  if (SAE_ARC_HEADER_LEGACY.test(arc)) {
+    arc = arc.replace(SAE_ARC_HEADER_LEGACY, `${SAE_ARC_HEADER}\n`);
+  }
+  return arc;
+}
+
 onLibrary_SAE();
 
 // SAE Functions
@@ -9552,20 +9566,6 @@ function extractStoryArcLines(text) {
 function isValidStoryArc(lines) {
   const minEvents = state.arcMinEvents ?? 4;
   return lines.length >= minEvents;
-}
-
-const SAE_ARC_HEADER = "Plot obligations — advance this Continue toward beat 1; do not skip or resolve later beats yet:";
-const SAE_ARC_HEADER_LEGACY = /^Write the story in the following direction:\s*/i;
-
-function normalizeStoryArcHeader(arcText) {
-  let arc = String(arcText || "").trim();
-  if (!arc) {
-    return arc;
-  }
-  if (SAE_ARC_HEADER_LEGACY.test(arc)) {
-    arc = arc.replace(SAE_ARC_HEADER_LEGACY, `${SAE_ARC_HEADER}\n`);
-  }
-  return arc;
 }
 
 // After AI call and prompt is fed to context, this function saves the generated story arc during the following output hook
