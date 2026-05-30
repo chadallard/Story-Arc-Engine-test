@@ -9231,6 +9231,26 @@ log("state.turnsPerAICall: " + state.turnsPerAICall);
 const SAE_ARC_HEADER = "Steer this turn toward beat 1. Foreshadow later beats, but don't resolve them yet:";
 const SAE_ARC_HEADER_LEGACY = /^Write the story in the following direction:\s*/i;
 
+const SAE_SETTINGS_NOTES = `
+    Type /help sae for more info.
+
+    Commands:
+    /help sae: Show the Story Arc Engine command and settings reference in-game.
+    /redo arc: Call the AI to regenerate the story arc (Continue on each generating turn until saved).
+    /sae status: Log arc and injection debug info to the Scripting console (use if Inspect is broken).
+    /stop: Cancel arc generation in progress.
+
+    Settings:
+    stop_SAE: Type "true" to disable SAE.
+    turnsPerAICall: Number of turns before calling AI to update the story arc. Takes in an integer.
+    arcPrompt: Prompt that is fed to the AI to generate a story arc. Must be encased in << >>.
+    attemptLimit: Number of attempts at generating story arc before stopping.
+    turnsPerElemRemoval: Number of turns before removing the first plot point to progress the arc. Set to 0 to turn off removal.
+    refreshArcWhenDepleted: true = refresh arc only after all numbered beats are removed (ignores turnsPerAICall). false = use turnsPerAICall timer.
+    arcBeatFocus: full | current | currentPlusNext — how many beats to inject (current = strongest adherence to beat 1).
+    arcPlacement: authorNote | beforeRecentStory — beforeRecentStory puts beats right above Recent Story (recommended).
+    `;
+
 function normalizeStoryArcHeader(arcText) {
   let arc = String(arcText || "").trim();
   if (!arc) {
@@ -9296,17 +9316,7 @@ function createIfNoSettingsSC() {
 
     // Fetch the sc
     const settingsSC = storyCards.find(sc => sc.title === "Story Arc Settings");
-    settingsSC.description = `
-    Type /help sae for more info.
-    stop_SAE: Type "true" to disable SAE.
-    turnsPerAICall: Number of turns before calling AI to update the story arc. Takes in an integer.
-    arcPrompt: Prompt that is fed to the AI to generate a story arc. Must be encased in << >>.
-    attemptLimit: Number of attempts at generating story arc before stopping.
-    turnsPerElemRemoval: Number of turns before removing the first plot point to progress the arc. Set to 0 to turn off removal.
-    refreshArcWhenDepleted: true = refresh arc only after all numbered beats are removed (ignores turnsPerAICall). false = use turnsPerAICall timer.
-    arcBeatFocus: full | current | currentPlusNext — how many beats to inject (current = strongest adherence to beat 1).
-    arcPlacement: authorNote | beforeRecentStory — beforeRecentStory puts beats right above Recent Story (recommended).
-    `;
+    settingsSC.description = SAE_SETTINGS_NOTES;
   }
 }
 
@@ -9316,6 +9326,11 @@ function storeSettingsToSC() {
   const promptForCard = `<<${getArcPromptText()}>>`;
 
   settingsSC.entry = `stop_SAE = ${state.stop_SAE}\nturnsPerAICall = ${state.turnsPerAICall}\nattemptLimit = ${state.attemptLimit}\nturnsPerElemRemoval = ${state.turnsPerElemRemoval}\nrefreshArcWhenDepleted = ${state.refreshArcWhenDepleted}\narcBeatFocus = ${state.arcBeatFocus}\narcPlacement = ${state.arcPlacement}\narcPrompt = ${promptForCard}`
+
+  // Keep the notes (commands + settings reference) current on existing cards too
+  if (settingsSC.description !== SAE_SETTINGS_NOTES) {
+    settingsSC.description = SAE_SETTINGS_NOTES;
+  }
 }
 
 function retrieveSettingsFromSC() {
