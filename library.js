@@ -9228,7 +9228,7 @@ if (state.arcPlacement === undefined) {
 state.turnsPerAICall = state.turnsPerAICall || 35;
 log("state.turnsPerAICall: " + state.turnsPerAICall);
 
-const SAE_ARC_HEADER = "Plot obligations — advance this Continue toward beat 1; do not skip or resolve later beats yet:";
+const SAE_ARC_HEADER = "Steer this turn toward beat 1. Foreshadow later beats, but don't resolve them yet:";
 const SAE_ARC_HEADER_LEGACY = /^Write the story in the following direction:\s*/i;
 
 function normalizeStoryArcHeader(arcText) {
@@ -9665,7 +9665,7 @@ function buildArcContextBlock() {
   if (focus === "current" && beats.length > 0) {
     const current = beats[0].replace(/^\d+\.\s*/, "");
     body = [
-      "CURRENT PLOT TARGET — advance this Continue toward:",
+      "Steer this turn toward beat 1. Don't skip ahead to later beats:",
       `• ${current}`,
       beats.length > 1 ? "(Other beats stay in Current Story Arc; do not skip ahead.)" : ""
     ].filter(line => line !== "").join("\n");
@@ -9674,7 +9674,7 @@ function buildArcContextBlock() {
     const current = beats[0].replace(/^\d+\.\s*/, "");
     const next = beats[1] ? beats[1].replace(/^\d+\.\s*/, "") : "";
     body = [
-      "CURRENT PLOT TARGET:",
+      "Steer this turn toward beat 1. Foreshadow the next beat, but don't resolve it yet:",
       `• ${current}`,
       next ? `NEXT (foreshadow only; do not resolve yet): ${next}` : "",
       beats.length > 2 ? "(Further beats in Current Story Arc; stay on current.)" : ""
