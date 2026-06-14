@@ -2559,17 +2559,68 @@ I hope you will have lots of fun!
   /**
    * Generates a path string for logging operations
    * Helps brain logs imitate actual code for ease of understanding
+   * @param {Agent} a - Agent whose brain is being logged
    * @param {string} key - Property name to access
    * @returns {string} Path like "agent_name.brain" or "agent_name.key"
    */
-  const path = (key = "brain") => `${(() => {
-    const fancy = formatKey(agent.name);
-    return (fancy === "") ? `agents[${JSON.stringify(agent.name)}]` : fancy;
+  const pathForAgent = (a, key = "brain") => `${(() => {
+    const fancy = formatKey(a.name);
+    return (fancy === "") ? `agents[${JSON.stringify(a.name)}]` : fancy;
   })()}.${key}`;
   // Queue of operations to execute
   const operations = [];
-  // Track which keys have been touched this turn
-  const altered = new Set();
+  // Track which keys have been touched this turn, per agent
+  const alteredByAgent = new Map();
+  /**
+   * @param {Agent} a
+   * @returns {Set<string>}
+   */
+  const getAltered = (a) => {
+    if (!alteredByAgent.has(a)) {
+      alteredByAgent.set(a, new Set());
+    }
+    return alteredByAgent.get(a);
+  };
+  const playerKey = formatKey(config.player || "");
+  const agentNameByKey = new Map();
+  for (const name of config.agents) {
+    const agentKey = formatKey(name);
+    if (agentKey !== "") {
+      agentNameByKey.set(agentKey, name);
+    }
+  }
+  const agentInstances = new Map();
+  let triggeredKey = "";
+  if (agent !== null) {
+    agentInstances.set(agent.name, agent);
+    triggeredKey = formatKey(agent.name);
+  }
+  /**
+   * When a thought key is prefixed with another configured NPC's name, route storage there.
+   * Models often encode the true author in the key even when the wrong NPC was triggered.
+   * @param {string} key - Normalized thought key
+   * @returns {Agent|null}
+   */
+  const resolveAgentFromKey = (key = "") => {
+    for (const [agentKey, name] of agentNameByKey) {
+      if ((agentKey === playerKey) || (agentKey === triggeredKey)) {
+        continue;
+      }
+      if ((key === agentKey) || key.startsWith(`${agentKey}_`)) {
+        if (!agentInstances.has(name)) {
+          agentInstances.set(name, new Agent(name, { percent: config.percent }));
+        }
+        const resolved = agentInstances.get(name);
+        if (agent === null) {
+          log("IS", "output key-prefix assign (no triggered agent):", key, "→", name);
+        } else if (resolved !== agent) {
+          log("IS", "output key-prefix redirect:", key, "→", name, "(triggered:", `${agent.name})`);
+        }
+        return resolved;
+      }
+    }
+    return agent;
+  };
   // ==================== BLOCK INTERPRETER ====================
   // Process extracted block and queue appropriate operations
   interpreter: for (const block of blocks) {
@@ -2607,10 +2658,6 @@ I hope you will have lots of fun!
       // Replace the block with newlines (or keep in debug mode)
       text = `${text.slice(0, start)}\n\n${config.debug ? `${block}\n\n` : ""}${text.slice(end)}`;
     };
-    if (agent === null) {
-      // Only perform deblocking when agent is null
-      continue;
-    }
     // Extract and normalize the block content
     const str = block.slice(1, -1).trim().replace(/==+/g, "=").replace(/::+/g, ":");
     // Prefer "=" over ":" as the key-value delimiter
@@ -2620,6 +2667,7 @@ I hope you will have lots of fun!
       continue;
     }
     // ==================== DELETE OPERATION ====================
+    if (agent !== null) {
     // Check if this is a delete/forget command
     /** @returns {string|null} */
     const delKey = (() => {
@@ -2646,25 +2694,29 @@ I hope you will have lots of fun!
     })();
     /**
      * Generates a delete log statement
+     * @param {Agent} a
      * @param {string} k - Key being deleted
      * @returns {string} JavaScript delete statement
      */
-    const logDelete = (k = "") => `delete ${path()}${(k === "") ? "[\"\"]" : `.${k}`};`;
+    const logDelete = (a, k = "") => `delete ${pathForAgent(a)}${(k === "") ? "[\"\"]" : `.${k}`};`;
     if ((typeof delKey === "string") && (delKey in agent.brain)) {
       // Valid delete statement
-      if (!altered.has(delKey)) {
+      if (!getAltered(agent).has(delKey)) {
         // Queue the delete operation
         operations.push(() => {
           delete agent.brain[delKey];
-          return logDelete(delKey);
+          return { agent, log: logDelete(agent, delKey) };
         });
-        altered.add(delKey);
+        getAltered(agent).add(delKey);
       }
       continue;
-    } else if (!/\S\s*[=:]+\s*\S/.test(str)) {
+    }
+    }
+    if (!/\S\s*[=:]+\s*\S/.test(str)) {
       // No assignment pattern, skip
       continue;
     }
+    const triggeredBrain = agent?.brain ?? {};
     // ==================== KEY EXTRACTION ====================
     /**
      * Gets everything after the last colon in a string
@@ -2679,7 +2731,7 @@ I hope you will have lots of fun!
       ).trim().replaceAll(" ", "_"));
       // If key exists in brain, use it as-is
       // Otherwise strip common prefixes/suffixes models tend to add
-      return (raw in agent.brain) ? raw : (raw
+      return (raw in triggeredBrain) ? raw : (raw
         .replace(/^th(?:oughts?|ink(?:ing))_(?:(?:o[nfr]|a(?:bout|nd)|with|for)_)?/, "")
         .replace(/(?:_(?:and|or))?_th(?:oughts?|ink(?:ing))$/, "")
       );
@@ -2688,7 +2740,7 @@ I hope you will have lots of fun!
       (60 < key.length)
       || ["thought", "thoughts", "think", "thinking", "any_name", "example_name"].includes(key)
       || ["any_key", "key_name", "example_key"].some(s => key.includes(s))
-    ) && !(key in agent.brain))) {
+    ) && !(key in triggeredBrain))) {
       // Skip invalid or placeholder keys copied from the task prompts
       continue;
     }
@@ -2706,21 +2758,27 @@ I hope you will have lots of fun!
     } else if (!value.includes(" ")) {
       // ==================== RENAME OPERATION ====================
       // No spaces = might be a key rename
-      if (altered.has(key)) {
+      if (agent === null) {
+        continue;
+      }
+      if (getAltered(agent).has(key)) {
         continue;
       }
       const oldKey = formatKey(value);
-      if (!altered.has(oldKey) && (oldKey in agent.brain)) {
+      if (!getAltered(agent).has(oldKey) && (oldKey in agent.brain)) {
         // Valid rename: move thought from old key to new key
         // Queue a rename operation
         operations.push(() => {
           agent.brain[key] = agent.brain[oldKey];
           delete agent.brain[oldKey];
-          const p = path();
-          return `${p}.${key} = ${p}.${oldKey};\n${logDelete(oldKey)}`;
+          const p = pathForAgent(agent);
+          return {
+            agent,
+            log: `${p}.${key} = ${p}.${oldKey};\n${logDelete(agent, oldKey)}`
+          };
         });
-        altered.add(key);
-        altered.add(oldKey);
+        getAltered(agent).add(key);
+        getAltered(agent).add(oldKey);
       }
       continue;
     } else if (value.includes("_")) {
@@ -2733,14 +2791,18 @@ I hope you will have lots of fun!
       .replaceAll("→", " ")
       .replaceAll("\\n", "\n")
     ).trim().split("\n", 1)[0].trimEnd();
-    if (altered.has(key) || !thought.includes(" ")) {
+    const targetAgent = resolveAgentFromKey(key);
+    if (targetAgent === null) {
+      continue;
+    }
+    if (getAltered(targetAgent).has(key) || !thought.includes(" ")) {
       // Skip if key already touched or thought too short
       continue;
-    } else if (!(key in agent.brain)) {
+    } else if (!(key in targetAgent.brain)) {
       // Check for duplicate thought values (don't store the same thing twice)
       const last = thought.length - 1;
       // Potentially hot loop so avoid excessive get() calls
-      const brain = agent.brain;
+      const brain = targetAgent.brain;
       for (const key in brain) {
         const existing = brain[key];
         if (
@@ -2781,23 +2843,26 @@ I hope you will have lots of fun!
       // Players assumed the operation log (card entry) was a reflection of the brain (card notes)
       // Thus players (reasonably) misinterpreted label updates as repetition
       // Solution: Log distinct relabel syntax to improve non-verbal communication
-      const target = `${path()}.${key}`;
-      const old = agent.brain[key];
-      agent.brain[key] = `${IS.label} → ${thought}`;
+      const target = `${pathForAgent(targetAgent)}.${key}`;
+      const old = targetAgent.brain[key];
+      targetAgent.brain[key] = `${IS.label} → ${thought}`;
       // Determine if this is a relabel of the same thought value
       const relabel = (
         (typeof old === "string")
         && (thought === old.slice(old.indexOf("→") + 1).trim())
       );
-      return `${(
-        relabel ? `old = ${target};\n` : ""
-      )}${target} = ${(
-        relabel ? `[${IS.label}, old${(
-          old.includes("→") ? "\n  .slice(old.indexOf(\"→\") + 1)\n  .trim()\n" : ".trim()"
-        )}].join(" → ")` : JSON.stringify(agent.brain[key])
-      )};`;
+      return {
+        agent: targetAgent,
+        log: `${(
+          relabel ? `old = ${target};\n` : ""
+        )}${target} = ${(
+          relabel ? `[${IS.label}, old${(
+            old.includes("→") ? "\n  .slice(old.indexOf(\"→\") + 1)\n  .trim()\n" : ".trim()"
+          )}].join(" → ")` : JSON.stringify(targetAgent.brain[key])
+        )};`
+      };
     });
-    altered.add(key);
+    getAltered(targetAgent).add(key);
   }
   // ==================== OUTPUT TEXT SANITIZATION ====================
   // Clean up the model's output text before finalizing
@@ -2850,7 +2915,7 @@ I hope you will have lots of fun!
   }
   // ==================== OPERATION EXECUTOR ====================
   // Execute queued brain operations and persist changes
-  if ((operations.length === 0) || (agent === null)) {
+  if (operations.length === 0) {
     // No operations to execute, we're done
     if (agent !== null && blocks.length === 0) {
       log("IS", "output model ignored thought format for", agent.name,
@@ -2867,70 +2932,84 @@ I hope you will have lots of fun!
   if (IS.hash === hash) {
     // Same history hash means this turn was a retry or erase + continue
     // This prevents duplicate brain modifications on retry (cached outputs cause problems)
-    log("IS", "output skip — duplicate history (retry/undo), no brain write for", agent.name);
+    log("IS", "output skip — duplicate history (retry/undo), no brain write for", agent?.name ?? "key-routed");
     return;
-  } else if (typeof agent.card.entry !== "string") {
-    // Initialize the brain card entry if it's not a string (shouldn't happen, but safety first)
-    agent.card.entry = "";
-  } else if (agent.card.entry.endsWith("UTC") && agent.card.entry.startsWith("// initialized @")) {
-    // This is a fresh brain card with only the timestamp comment
-    // I prefer logging this info immediately before processing the first valid operation
-    // Add metadata and initialize the brain object in the log
-    agent.card.entry = `${agent.card.entry.trimStart()}\n${path("metadata")} = ${(
-      JSON.stringify(agent.metadata, null, 2)
-    )};\n${path()} = {};\n// Entry: Displays recent brain operations to the player\n// Triggers: Configurable settings for this NPC alone\n// Notes: Allows the player to view/edit actual brain contents`;
   }
   // Update the hashcode to mark this history state as processed
   IS.hash = hash;
   // Clear the previous encoding since new operations are being committed
   IS.encoding = "";
+  /**
+   * Prepares a fresh brain card entry before the first logged operation
+   * @param {Agent} opAgent
+   * @returns {void}
+   */
+  const ensureAgentEntry = (opAgent) => {
+    if (typeof opAgent.card.entry !== "string") {
+      opAgent.card.entry = "";
+    } else if (opAgent.card.entry.endsWith("UTC") && opAgent.card.entry.startsWith("// initialized @")) {
+      opAgent.card.entry = `${opAgent.card.entry.trimStart()}\n${pathForAgent(opAgent, "metadata")} = ${(
+        JSON.stringify(opAgent.metadata, null, 2)
+      )};\n${pathForAgent(opAgent)} = {};\n// Entry: Displays recent brain operations to the player\n// Triggers: Configurable settings for this NPC alone\n// Notes: Allows the player to view/edit actual brain contents`;
+    }
+  };
+  /**
+   * Writes the agent brain back to card notes
+   * @param {Agent} opAgent
+   * @returns {void}
+   */
+  const serializeAgentBrain = (opAgent) => {
+    const brain = opAgent.brain;
+    const keys = Object.keys(brain);
+    if (keys.length === 0) {
+      opAgent.card.description = "{}";
+      log("IS", "brain notes cleared (empty) for", opAgent.name);
+      return;
+    }
+    let serialized = "";
+    const appendPair = config.json ? ((
+      serialized = `"${keys[0]}": ${JSON.stringify(brain[keys[0]])}`
+    ), (key = "") => {
+      serialized += `,\n\n"${key}": ${JSON.stringify(brain[key])}`;
+      return;
+    }) : ((
+      serialized = `${keys[0]}: ${brain[keys[0]]}`
+    ), (key = "") => {
+      serialized += `\n\n${key}: ${brain[key]}`;
+      return;
+    });
+    for (let i = 1; i < keys.length; i++) {
+      appendPair(keys[i]);
+    }
+    opAgent.card.description = serialized;
+    log("IS", "brain updated:", opAgent.name, "| thought keys:", keys.length, "|", keys.slice(0, 5).join(", ") + (5 < keys.length ? "…" : ""));
+  };
+  /**
+   * Trims an agent operation log to AID's soft entry limit
+   * @param {Agent} opAgent
+   * @returns {void}
+   */
+  const trimAgentEntry = (opAgent) => {
+    opAgent.card.entry = opAgent.card.entry.split(/\n\n/).slice(-2000).reduceRight((out, op) => (
+      ((out.length + op.length + 2) < 2001) ? `${op}${out ? `\n\n${out}` : ""}` : out
+    ), "");
+  };
+  const touchedAgents = new Set();
   // Execute each queued operation and append to the operation log
-  log("IS", "output saving", operations.length, "brain op(s) for", agent.name, "| total ops:", IS.ops + operations.length);
+  log("IS", "output saving", operations.length, "brain op(s) for", agent?.name ?? "key-routed", "| total ops:", IS.ops + operations.length);
   for (const operation of operations) {
     // Increment global operation counter
     IS.ops++;
-    // Execute the operation (modifies agent.brain) and get the log message
-    // Append the message to the agent's brain card entry
-    agent.card.entry = `${agent.card.entry}\n\n// operation ${IS.ops}\n${operation()}`.trimStart();
+    const { agent: opAgent, log: operationLog } = operation();
+    touchedAgents.add(opAgent);
+    ensureAgentEntry(opAgent);
+    opAgent.card.entry = `${opAgent.card.entry}\n\n// operation ${IS.ops}\n${operationLog}`.trimStart();
   }
   text ||= "\u200B";
-  // Keep the operation log from growing unbounded
-  // Limit to approximately 2000 chars to satisfy AID's soft entry limit
-  agent.card.entry = agent.card.entry.split(/\n\n/).slice(-2000).reduceRight((out, op) => (
-    // Only include operations that fit within the char limit
-    ((out.length + op.length + 2) < 2001) ? `${op}${out ? `\n\n${out}` : ""}` : out
-  ), "");
-  // ==================== BRAIN SERIALIZATION ====================
-  // Rapidly reserialize a flat representation of the modified brain, without heavy memory allocations
-  // This custom serialization is faster than JSON.stringify for flat objects
-  // It also produces a more readable format in the story card notes
-  const brain = agent.brain;
-  const keys = Object.keys(brain);
-  if (keys.length === 0) {
-    agent.card.description = "{}";
-    log("IS", "brain notes cleared (empty) for", agent.name);
-    return;
+  for (const opAgent of touchedAgents) {
+    trimAgentEntry(opAgent);
+    serializeAgentBrain(opAgent);
   }
-  // Build the JSON-like string manually for each key-value pair
-  let serialized = "";
-  const appendPair = config.json ? ((
-    serialized = `"${keys[0]}": ${JSON.stringify(brain[keys[0]])}`
-  ), (key = "") => {
-    // Format -> "key": "value",\n\n (JSON with linebreaks)
-    serialized += `,\n\n"${key}": ${JSON.stringify(brain[key])}`;
-    return;
-  }) : ((
-    serialized = `${keys[0]}: ${brain[keys[0]]}`
-  ), (key = "") => {
-    // Format -> key: value\n\n (simple user-friendly format)
-    serialized += `\n\n${key}: ${brain[key]}`;
-    return;
-  });
-  for (let i = 1; i < keys.length; i++) {
-    appendPair(keys[i]);
-  }
-  agent.card.description = serialized;
-  log("IS", "brain updated:", agent.name, "| thought keys:", keys.length, "|", keys.slice(0, 5).join(", ") + (5 < keys.length ? "…" : ""));
   disarmISThoughtFrontMemory();
   return;
 }
