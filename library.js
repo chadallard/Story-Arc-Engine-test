@@ -446,6 +446,23 @@ function InnerSelf(hook) {
     return {};
   };
   /**
+   * Normalizes a card's "agent" metadata into a clean list of names
+   * Accepts a single name (string, backwards compatible) or multiple alias names (array)
+   * The first surviving name is canonical; the rest are aliases that share one brain card
+   * @param {string|string[]} value - Raw agent metadata
+   * @returns {string[]} Deduplicated, cleaned names (canonical first)
+   */
+  const agentNames = (value = null) => [...new Set((
+    Array.isArray(value) ? value : [value]
+  )
+    .map(name => (
+      (typeof name === "string")
+        ? name.replace(/[,\u200B-\u200D]+/g, "").trim().replace(/\s+/g, " ")
+        : ""
+    ))
+    .filter(name => (name !== ""))
+  )];
+  /**
    * Validated config settings for Inner Self
    * Default settings are specified by creators at the scenario level
    * Runtime settings are specified by players at the adventure level
@@ -737,19 +754,24 @@ function InnerSelf(hook) {
         } else if ((typeof card.keys === "string") && card.keys.includes("\"agent\"")) {
           // This card has agent metadata, extract and validate it
           const metadata = deserialize(card.keys);
-          if (typeof metadata.agent === "string") {
-            metadata.agent = cleanAgent(metadata.agent);
-            if (metadata.agent !== "") {
-              if (!agents.has(metadata.agent)) {
-                // First time seeing this brain card
-                agents.add(metadata.agent);
-                card.keys = JSON.stringify(metadata);
-                continue;
-              } else if (typeof card.title === "string") {
-                // Duplicate brain card, mark it as a copy
-                card.title = card.title.trim();
-                card.title = `Copy of ${(card.title === "") ? "Agent" : card.title}`;
+          // Supports a single name (string) or multiple alias names (array)
+          const names = agentNames(metadata.agent);
+          if (names.length !== 0) {
+            // The first name is canonical; any others are aliases for the same card
+            const canonical = names[0];
+            if (!agents.has(canonical)) {
+              // First time seeing this brain card, register every alias as a trigger name
+              for (const name of names) {
+                agents.add(name);
               }
+              // Keep a plain string for single names (backwards compatible), array otherwise
+              metadata.agent = (names.length === 1) ? canonical : names;
+              card.keys = JSON.stringify(metadata);
+              continue;
+            } else if (typeof card.title === "string") {
+              // Duplicate brain card, mark it as a copy
+              card.title = card.title.trim();
+              card.title = `Copy of ${(card.title === "") ? "Agent" : card.title}`;
             }
           }
           // Invalid agent metadata, clear it
@@ -965,13 +987,21 @@ function InnerSelf(hook) {
       const isAgent = (card = {}) => (
         (typeof card.keys === "string")
         && card.keys.includes("\"agent\"")
-        && (deserialize(card.keys).agent === this.name)
+        && agentNames(deserialize(card.keys).agent).includes(this.name)
       );
+      // Re-points this.name to the card's canonical (first) name when an alias triggered
+      const canonicalize = (card = {}) => {
+        const canonical = agentNames(deserialize(card.keys).agent)[0];
+        if ((typeof canonical === "string") && (canonical !== "")) {
+          this.name = canonical;
+        }
+      };
       if (typeof this.#indicator !== "string") {
         // If no indicator is set, just find or create the card
         for (const card of storyCards) {
           if (isAgent(card)) {
             // Found an existing card
+            canonicalize(card);
             this.#card = card;
             return this.#card;
           }
@@ -989,6 +1019,7 @@ function InnerSelf(hook) {
         deindicate(card);
         if ((this.#card === null) && isAgent(card)) {
           // Found the brain card, add the indicator prefix
+          canonicalize(card);
           if (this.#indicator !== "") {
             card.title = (card.title === "") ? prefix : `${prefix} ${card.title}`;
           }
@@ -1354,7 +1385,9 @@ function InnerSelf(hook) {
     }
     // Construct the agent instance for the triggered NPC
     const agent = new Agent(IS.agent, { percent: config.percent, indicator: config.indicator });
+    // Resolve the brain card, then pin the persisted trigger to its canonical name (handles aliases)
     log("IS", "context brain card ready:", agent.name, "| card:", agent.card?.title ?? "unknown");
+    IS.agent = agent.name;
     // Whitelist of thought labels allowed in this context
     const whitelist = new Set();
     /**
