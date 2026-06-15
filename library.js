@@ -9745,6 +9745,7 @@ function saveStoryArc(text) {
     else {
       state.attemptCounter = 0;
       state.lastArcRefreshTurn = state.turnNum_SAE;
+      state.arcSavedThisTurn = true;
       disarmArcMemoryOverrides();
 
       state.storyArc = `${SAE_ARC_HEADER}\n${outputtedArc}`;
@@ -9961,6 +9962,11 @@ function removeFirstListItem(text) {
 
 // Remove the first plot element in story arc every set turn to help clean and progress story arc
 function arcElementRemoval() {
+  if (state.arcSavedThisTurn) {
+    state.arcSavedThisTurn = false;
+    log("SAE arcElementRemoval skipped — arc just (re)generated this turn");
+    return;
+  }
   if (state.saveOutput == false
     && state.turnNum_SAE >= 5
     && state.turnNum_SAE % state.turnsPerElemRemoval == 0
