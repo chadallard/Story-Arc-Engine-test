@@ -9229,7 +9229,8 @@ function detectSaeStatus(text) {
     arcPlacement: state.arcPlacement,
     nextArcTurn: state.refreshArcWhenDepleted
       ? "when arc has no numbered beats left"
-      : state.turnsPerAICall - (state.turnNum_SAE % state.turnsPerAICall)
+      : Math.max(0, state.turnsPerAICall - (state.turnNum_SAE - (state.lastArcRefreshTurn ?? 0))),
+    depletedRefillPending: (state.storyArc || "").trim() !== "" && lineCount === 0
   });
   log("SAE status preview", (state.storyArc || "(empty — generate arc first)").slice(0, 500));
   log("SAE status tip", "Take a Continue, then check Context Modifier logs for SAE feedStoryArc ok/fallback");
@@ -9339,6 +9340,14 @@ if (state.arcPlacement === undefined) {
 
 state.turnsPerAICall = state.turnsPerAICall || 35;
 log("state.turnsPerAICall: " + state.turnsPerAICall);
+
+if (state.lastArcRefreshTurn === undefined) {
+  state.lastArcRefreshTurn = state.turnNum_SAE - (state.turnNum_SAE % state.turnsPerAICall);
+}
+
+if (state.lastArcGiveUpTurn === undefined) {
+  state.lastArcGiveUpTurn = -1e9;
+}
 
 const SAE_ARC_HEADER = "Steer this turn toward beat 1. Foreshadow later beats, but don't resolve them yet:";
 const SAE_ARC_HEADER_LEGACY = /^Write the story in the following direction:\s*/i;
@@ -9517,14 +9526,22 @@ function shouldScheduleArcRefresh() {
   if (state.turnNum_SAE === 1) {
     return true;
   }
+
+  const sinceRefresh = state.turnNum_SAE - (state.lastArcRefreshTurn ?? 0);
+  const timerDue = sinceRefresh >= state.turnsPerAICall;
+  const depleted = (state.storyArc || "").trim() !== "" && countArcBeats(state.storyArc) === 0;
+  const giveUpCooldownOk =
+    state.turnNum_SAE - (state.lastArcGiveUpTurn ?? -1e9) >= state.turnsPerAICall;
+
   if (state.refreshArcWhenDepleted) {
     if (state.turnsPerElemRemoval === 0) {
       log("SAE refreshArcWhenDepleted ignored — turnsPerElemRemoval is 0");
-      return state.turnNum_SAE % state.turnsPerAICall === 0;
+      return timerDue;
     }
-    return countArcBeats(state.storyArc) === 0;
+    return depleted && giveUpCooldownOk;
   }
-  return state.turnNum_SAE % state.turnsPerAICall === 0;
+
+  return timerDue || (depleted && giveUpCooldownOk);
 }
 
 // On output, waits for the correct turn to call AI for generating story arc
@@ -9710,6 +9727,7 @@ function saveStoryArc(text) {
       if (state.attemptCounter >= state.attemptLimit) {
         state.saveOutput = false;
         state.attemptCounter = 0;
+        state.lastArcGiveUpTurn = state.turnNum_SAE;
         disarmArcMemoryOverrides();
 
         text = `\n<< 🧱 Attempt Limit Reached: Keeping Current Arc. Type '/redo arc' or wait for next AI call. >>`
@@ -9726,6 +9744,7 @@ function saveStoryArc(text) {
     // Correct story arc formatting gets saved
     else {
       state.attemptCounter = 0;
+      state.lastArcRefreshTurn = state.turnNum_SAE;
       disarmArcMemoryOverrides();
 
       state.storyArc = `${SAE_ARC_HEADER}\n${outputtedArc}`;
