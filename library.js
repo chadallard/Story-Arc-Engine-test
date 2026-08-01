@@ -210,7 +210,6 @@ globalThis.MainSettings = (class MainSettings {
           ? MainSettings[alternative]
           : null
     );
-    return this;
   }
   merge(settings) {
     if (!this.#config || !settings || (typeof settings !== "object")) {
@@ -219,7 +218,6 @@ globalThis.MainSettings = (class MainSettings {
     for (const [key, value] of Object.entries(this.#config)) {
       settings[key] = value;
     }
-    return;
   }
 });
 
@@ -240,10 +238,10 @@ function armISThoughtFrontMemory(agentName) {
   state.memory.frontMemory = [
     `INNER SELF TASK for ${agentName}:`,
     `The first character of your reply MUST be "(".`,
-    `Format: (thought_key = \`one short first-person thought\`) then one space then 2nd-person story.`,
-    `Example: (leo_worry = \`I hope they're okay.\`) You hear Leo shift his weight.`
+    `Format: (remember = \`self-contained third-person memory naming who and what\`) then one space then story.`,
+    `Example: (remember = \`Leo worries that Kara has not returned from the market.\`) You hear Leo shift his weight.`
   ].join(" ");
-  log("IS", "frontMemory armed for thought task:", agentName);
+  log("IS", "frontMemory armed for memory task:", agentName);
 }
 
 function disarmISThoughtFrontMemory() {
@@ -511,7 +509,7 @@ function InnerSelf(hook) {
         guide: false,
         player: "",
         pov: 2,
-        percent: 30,
+        percent: 40,
         distance: 5,
         indicator: "🎭",
         chance: 60,
@@ -573,7 +571,7 @@ function InnerSelf(hook) {
             // Parse integer from string, stripping decimals and non-digits
             value = value.split(/[./]/, 1)[0].replace(/[^\d]+/g, "");
             if (value !== "") {
-              config[key] = bound(parseInt(value, 10));
+              config[key] = bound(Number.parseInt(value, 10));
             } else if (!fallible) {
               config[key] = bound(fallback[key]);
             }
@@ -717,7 +715,7 @@ function InnerSelf(hook) {
             // This is where players list their NPCs
             message: "Write the first name of every intelligent story character on separate lines below, listed from highest to lowest trigger priority:",
             builder: (cfg = {}) => ["", "", ...(
-              config.agents ?? cfg.setter?.(S.IMPORTANT_SCENARIO_CHARACTERS)
+              config.agents ?? cfg.setter?.(S.IMPORTANT_SCENARIO_CHARACTERS) ?? []
             ), ""].join("\n"),
             setter: (value = null, fallible = false) => {
               // Accept string (from card) or array (from code)
@@ -903,7 +901,6 @@ function InnerSelf(hook) {
         .trim()
       );
     }
-    return;
   };
   /**
    * Agent class - Represents an NPC with a simulated brain
@@ -928,14 +925,13 @@ function InnerSelf(hook) {
      * The agent will find or create their brain card automatically
      * @param {string} name - The name of the agent (used for triggering)
      * @param {Object} [options] - Optional settings for the agent
-     * @param {number} [options.percent=30] - Context reserved for brain contents
+     * @param {number} [options.percent=40] - Context reserved for brain contents
      * @param {string} [options.indicator=null] - Visual indicator when triggered
      */
-    constructor(name = "", { percent = 30, indicator = null } = {}) {
+    constructor(name = "", { percent = 40, indicator = null } = {}) {
       this.#indicator = indicator;
       this.#percent = percent;
       this.name = name;
-      return this;
     }
     /**
      * Gets or creates the agent's brain card
@@ -958,7 +954,7 @@ function InnerSelf(hook) {
         (() => {
           // Generate a pretty timestamp for the initialization comment
           const time = new Date();
-          const match = time.toLocaleString("en-US", {
+          const match = /(\d+)\/(\d+)\/(\d+),?\s*(\d+:\d+\s*[AP]M)/.exec(time.toLocaleString("en-US", {
             timeZone: "UTC",
             year: "numeric",
             month: "2-digit",
@@ -966,7 +962,7 @@ function InnerSelf(hook) {
             hour: "numeric",
             minute: "2-digit",
             hour12: true
-          }).match(/(\d+)\/(\d+)\/(\d+),?\s*(\d+:\d+\s*[AP]M)/);
+          }));
           return `// initialized @ ${(
             match
               ? `${match[3]}-${match[1]}-${match[2]} ${match[4]}`
@@ -1084,43 +1080,66 @@ function InnerSelf(hook) {
         this.card.description = "";
       }
       this.#brain = {};
+      let coreSeq = 0;
+      // Stores one memory, migrating legacy shapes on the fly. Legacy values carry a label inside the
+      // value as "<n> → text" under an obsolete snake_case key; the new model drops the key and keys the
+      // memory on its label. Values with no embedded label become hand-pinned "core" memories.
+      const ingest = (keyHint, rawValue) => {
+        const text = String(rawValue).trim();
+        if (text === "") {
+          return;
+        }
+        // Legacy "<label> → <text>" carried inside the value
+        const arrow = text.search(/→|->/);
+        if (arrow !== -1) {
+          const label = Number.parseInt(text.slice(0, arrow), 10);
+          const rest = text.slice(arrow + ((text[arrow] === "→") ? 1 : 2)).trim();
+          if (Number.isInteger(label) && (rest !== "")) {
+            this.#brain[String(label)] = rest;
+            return;
+          }
+        }
+        // No embedded label: key on the hint if it is numeric, else treat as a core memory
+        const hint = memLabel(keyHint);
+        this.#brain[(hint === null) ? `core_${coreSeq++}` : String(hint)] = text;
+      };
       if (/^[\s{,]*"/.test(this.card.description) || /"[\s},]*$/.test(this.card.description)) {
         let parsed = false;
         // Parse the brain as JSON from the card description, with repairs allowed
         const source = deserialize(this.card.description, true);
         for (const key in source) {
-          // Only keep string values (the actual thoughts)
-          (typeof source[key] === "string") && ((this.#brain[key] = source[key]), (parsed = true));
+          // Only keep string values (the actual memories)
+          if (typeof source[key] === "string") {
+            ingest(key, source[key]);
+            parsed = true;
+          }
         }
         if (parsed) {
           // Conclude if the brain contains any string-valued properties
           return this.#brain;
         }
-        // Failed to parse any meaningful thoughts, try the simple format instead
+        // Failed to parse any meaningful memories, try the simple format instead
       }
-      // Parse the brain from the card description using the simple format
+      // Parse the brain from the card description using the simple format (memories separated by blank lines)
       for (const line of this.card.description.split("\n")) {
         const clean = line.trim();
         if (clean === "") {
           continue;
         }
-        // Find the first colon (allows colons in values like "5:30 PM")
-        const bisector = clean.indexOf(":");
-        if (bisector === -1) {
-          // No key-value pair on this line
+        // New numbered memory: "<label> → <text>"
+        const numbered = /^(\d+)\s*(?:→|->)\s*(.+)$/.exec(clean);
+        if (numbered) {
+          this.#brain[numbered[1]] = numbered[2].trim();
           continue;
         }
-        // Remove unwanted leading/trailing chars from both key and value
-        const [key, value] = [
-          // Left of colon
-          clean.slice(0, bisector),
-          // Right of colon
-          clean.slice(bisector + 1)
-        ].map(twin => twin.replace(/(?:^[\s{},"_\\]*|[\s{},"_\\]*$)/g, ""));
-        if ((key !== "") && (value !== "")) {
-          // Only add if key and value are both non-empty
-          this.#brain[key] = value;
+        // Legacy "<snake_key>: <label> → <text>" — drop the obsolete key, keep the labeled memory
+        const legacy = /^[A-Za-z][A-Za-z0-9_]*\s*:\s*(\d+\s*(?:→|->)\s*.+)$/.exec(clean);
+        if (legacy) {
+          ingest(null, legacy[1]);
+          continue;
         }
+        // Anything else is a self-contained core memory, kept verbatim
+        this.#brain[`core_${coreSeq++}`] = clean;
       }
       return this.#brain;
     }
@@ -1131,7 +1150,6 @@ function InnerSelf(hook) {
      */
     lobotomize() {
       this.#brain = null;
-      return;
     }
   }
   /**
@@ -1140,6 +1158,99 @@ function InnerSelf(hook) {
    * @returns {Object|undefined} The previous action or undefined
    */
   const getPrevAction = () => history.findLast(a => !/^[\u200B-\u200D]*$/.test(a?.text ?? a?.rawText ?? ""));
+  // A brain is now { <key>: "<memory text>" }. A numeric key is the memory's recency label
+  // (higher = newer); a non-numeric key is a hand-pinned "core" memory that carries no number.
+  const memLabel = (key = "") => (/^\d+$/.test(String(key)) ? Number.parseInt(String(key), 10) : null);
+  // How a single memory reads inside the context brain block (also used to size the brain vs budget)
+  const renderMemory = (key, text) => {
+    const label = memLabel(key);
+    return `[${(label === null) ? "core" : label}] ${text}`;
+  };
+  // Sorts brain keys ascending by label; core (non-numeric) memories sort last
+  const sortBrainKeys = (brain) => Object.keys(brain).sort((a, b) => {
+    const la = memLabel(a);
+    const lb = memLabel(b);
+    if (la === lb) {
+      return 0;
+    }
+    if (la === null) {
+      return 1;
+    }
+    if (lb === null) {
+      return -1;
+    }
+    return la - lb;
+  });
+  // Serializes a brain object to card-notes format (shared by the context auto-trim and the output writer)
+  // `json` is passed in because `config` is block-scoped per hook and not visible at this body scope
+  const serializeBrain = (brain, json) => {
+    const keys = sortBrainKeys(brain);
+    if (keys.length === 0) {
+      return "{}";
+    }
+    return json
+      // JSON notes keep a key so they round-trip: the label for numbered memories, "core_N" otherwise
+      ? keys.map(key => `"${key}": ${JSON.stringify(brain[key])}`).join(",\n\n")
+      // Plain notes read as "<label> → <memory>"; core memories are written bare, with no number
+      : keys.map(key => {
+        const label = memLabel(key);
+        return (label === null) ? `${brain[key]}` : `${label} → ${brain[key]}`;
+      }).join("\n\n");
+  };
+  // Flip to false to fully disable the auto-trim safety net (handy for A/B testing against odd behavior).
+  const IS_AUTO_TRIM_ENABLED = true;
+  // Deterministic safety net: the model's merge/delete task is unreliable, so a brain can grow past its
+  // budget and lock itself into merge-only mode forever (no new memories). This evicts the oldest labeled
+  // memories straight from the card NOTES so the brain self-heals. Core memories are never touched.
+  const autoTrimBrain = (agent, contextText, boundary, config) => {
+    if (!agent?.card) {
+      return;
+    }
+    const brain = agent.brain;
+    const keys = Object.keys(brain);
+    if (keys.length === 0) {
+      return;
+    }
+    // Mirror the joinMind length used by the "full"/constrained check so trimming actually clears it
+    const measure = () => Object.entries(brain).reduce(
+      (sum, [key, text]) => sum + `${renderMemory(key, text)}\n`.length, 0
+    );
+    // Same budget basis as the constrained check, with the same ~800-char floor (never trim small brains)
+    const upperIndex = contextText.indexOf(boundary.upper);
+    const region = contextText.length - upperIndex + boundary.upper.length;
+    const trigger = Math.max(800, (agent.metadata.percent / 100) * region);
+    if (measure() <= trigger) {
+      return;
+    }
+    // Trim a little under the trigger so a single new memory next turn doesn't immediately re-trip it
+    const floor = trigger * 0.85;
+    // Self-contained memories run longer than the old fragments, so keep fewer and evict more per pass
+    const KEEP_RECENT = 4;
+    const MAX_EVICTIONS = 6;
+    // Evict oldest (lowest label) first; core (non-numeric) memories are identity and never evicted
+    const candidates = keys
+      .map(key => ({ key, label: memLabel(key) }))
+      .filter(o => o.label !== null)
+      .sort((a, b) => a.label - b.label);
+    const evictable = candidates.slice(0, Math.max(0, candidates.length - KEEP_RECENT));
+    const removed = [];
+    for (const { key } of evictable) {
+      if ((removed.length >= MAX_EVICTIONS) || (measure() <= floor)) {
+        break;
+      }
+      delete brain[key];
+      removed.push(key);
+    }
+    if (removed.length === 0) {
+      log("IS", "auto-trim over budget but nothing evictable for", agent.name,
+        "| memories:", keys.length, "(only core/recent memories remain)");
+      return;
+    }
+    agent.card.description = serializeBrain(brain, config.json);
+    agent.lobotomize();
+    log("IS", "auto-trim evicted", removed.length, "old memory(ies) for", agent.name,
+      "→", removed.join(", "), "| remaining:", Object.keys(agent.brain).length);
+  };
   // ==================== CONTEXT HOOK ====================
   // This is where (half) of the magic happens: Inner Self injects brains and tasks into context
   // Infer the current lifecycle hook
@@ -1184,7 +1295,7 @@ function InnerSelf(hook) {
         log(error.message);
       }
       IS.AC.enabled = true;
-      if (IS.AC.event || (stop === true)) {
+      if (IS.AC.event || stop) {
         // If AC triggered an event or stop, we're done here
         config.allow ? unzero() : ((IS.encoding = ""), (text ||= " "));
         return;
@@ -1245,7 +1356,6 @@ function InnerSelf(hook) {
       for (const card of storyCards) {
         deindicate(card);
       }
-      return;
     };
     if (config.agents.length === 0) {
       // No agents are configured
@@ -1266,14 +1376,14 @@ function InnerSelf(hook) {
       i--
     ) {
       const actionText = history[i]?.text ?? history[i]?.rawText;
-      if ((typeof actionText !== "string") || (actionText.indexOf(">>>") !== -1)) {
+      if ((typeof actionText !== "string") || (actionText.includes(">>>"))) {
         // Skip invalid actions or Auto-Cards thingies
         continue;
       }
       scan: {
         // Check if this action has any meaningful content
         for (let j = actionText.length - 1; -1 < j; j--) {
-          const c = actionText.charCodeAt(j);
+          const c = actionText.codePointAt(j);
           if ((0x20 < c) && (c !== 0x200B) && (c !== 0x200C) && (c !== 0x200D)) {
             // Fast accept any non-whitespace + non-zero-width char
             break scan;
@@ -1295,9 +1405,9 @@ function InnerSelf(hook) {
           p = lower.indexOf(agentLower, p + 1)
         ) {
           // Ensure word boundaries (not a-z before or after)
-          if ([((0 < p) ? lower.charCodeAt(p - 1) : 0), (
+          if ([((0 < p) ? lower.codePointAt(p - 1) : 0), (
             ((p + agentLower.length) < lower.length)
-              ? lower.charCodeAt(p + agentLower.length) : 0
+              ? lower.codePointAt(p + agentLower.length) : 0
           )].every(c => ((c < 97) || (122 < c)))) {
             // Found a valid trigger
             possibilities.push(config.agents[a]);
@@ -1357,21 +1467,19 @@ function InnerSelf(hook) {
       }
       let end = start + substring.length;
       // Expand left over whitespace
-      while ((0 < start) && (text.charCodeAt(start - 1) < 33)) {
+      while ((0 < start) && (text.codePointAt(start - 1) < 33)) {
         start--;
       }
       // Expand right over whitespace
-      while ((end < text.length) && (text.charCodeAt(end) < 33)) {
+      while ((end < text.length) && (text.codePointAt(end) < 33)) {
         end++;
       }
       text = `${text.slice(0, start)}${replacement}${text.slice(end)}`;
-      return;
     };
     // Replace "Recent Story:" with the upper boundary marker
     setMarker(boundary.needle, boundary.upper, () => {
       // No needle found, append marker to end
       text = `${text.trimEnd()}${boundary.upper}`;
-      return;
     });
     if (config.debug) {
       const start = text.indexOf(boundary.upper);
@@ -1388,6 +1496,17 @@ function InnerSelf(hook) {
     // Resolve the brain card, then pin the persisted trigger to its canonical name (handles aliases)
     log("IS", "context brain card ready:", agent.name, "| card:", agent.card?.title ?? "unknown");
     IS.agent = agent.name;
+    // On genuinely new turns (not retries/undos), shrink an over-budget brain in code so it can't get
+    // stuck in forget-only mode when the model ignores the (delete key) task. Runs before mind/"full".
+    if (IS_AUTO_TRIM_ENABLED && (IS.hash !== historyHash())) {
+      try {
+        autoTrimBrain(agent, text, boundary, config);
+      } catch (error) {
+        // Never let the safety net break the context hook; reset any half-mutated brain cache
+        agent.lobotomize?.();
+        log("IS", "auto-trim error (skipped):", error?.message ?? error);
+      }
+    }
     // Whitelist of thought labels allowed in this context
     const whitelist = new Set();
     /**
@@ -1400,25 +1519,18 @@ function InnerSelf(hook) {
       // Keeps things fresh and prevents bias toward recent or old thoughts
       const direction = (Math.random() < 0.7) ? 1 : -1;
       const brain = agent.brain;
-      // Separate thoughts into numbered and unlabeled
+      // Separate memories into numbered (labeled) and core (unlabeled)
       const unknowns = [];
       const numbered = [];
-      // Parse each thought and extract label/content
+      // Each memory is stored as { <key>: text }; the key is the label (or a "core_N" core key)
       for (const key in brain) {
-        const value = brain[key];
+        const thought = brain[key];
         // Clear from brain (keep instantaneous memory use low)
         delete brain[key];
-        // Arrow separates label from thought content
-        const sliceIndex = value.indexOf("→");
-        const unknown = "*";
-        // Parse label and thought, handle malformed values
-        const [label, thought] = (sliceIndex === -1) ? [unknown, value.trim()] : [
-          parseInt(value.slice(0, sliceIndex), 10) || unknown,
-          value.slice(sliceIndex + 1).trim()
-        ];
-        const triplet = [label, key, thought];
-        if (!Number.isInteger(label)) {
-          // No valid label, insert at random position in unknowns
+        const label = memLabel(key);
+        const triplet = [label ?? "*", key, thought];
+        if (label === null) {
+          // Core memory, insert at random position in unknowns
           unknowns.splice(Math.floor(Math.random() * (unknowns.length + 1)), 0, triplet);
           continue;
         }
@@ -1432,10 +1544,10 @@ function InnerSelf(hook) {
       // Teehee
       agent.lobotomize();
       if (unknowns.length === 0) {
-        // All thoughts have labels, nice and clean UwU
+        // All memories are labeled, nice and clean UwU
         return numbered;
       }
-      // Thoughts without integer labels ("[*]") are placed above (60%) or below (40%) the rest
+      // Core memories ("[core]") are placed above (60%) or below (40%) the rest
       return (Math.random() < 0.6) ? [...unknowns, ...numbered] : [...numbered, ...unknowns];
     })();
     // Process context and decode any embedded thought labels
@@ -1452,7 +1564,7 @@ function InnerSelf(hook) {
       let decoded = "";
       // Parse binary encoding: ZWSP = separator, ZWNJ = 0, ZWJ = 1
       for (let i = 0; i <= encoded.length; i++) {
-        const c = encoded.charCodeAt(i);
+        const c = encoded.codePointAt(i);
         if ((c === 0x200C) || (c === 0x200D)) {
           // Accumulate bits
           n = (n << 1) | (c === 0x200D);
@@ -1496,14 +1608,14 @@ function InnerSelf(hook) {
      * @returns {string} Formatted brain context block
      */
     const bindSelf = (joined = "") => ((mind.length = 0) || (joined === "")) ? "\n\n" : (
-      `\n\n# ${ownership(agent.name)} brain and inner self: [\n${joined}\n]\n\n`
+      `\n\n# ${ownership(agent.name)} memories: [\n${joined}\n]\n\n`
     );
     // Check if the current turn is a retry or erase + continue following a previous task completion
     if (IS.hash === historyHash()) {
-      // Same history, just inject the contextualized brain without a new task
-      log("IS", "context retry/duplicate turn — existing thoughts only, no new task for", IS.agent);
+      // Same history, just inject the contextualized memories without a new task
+      log("IS", "context retry/duplicate turn — existing memories only, no new task for", IS.agent);
       text = `${nondirective()}${bindSelf(mind
-        .map(([label, key, thought]) => `- ${key}: ${thought} [${label}]`)
+        .map(([label, key, thought]) => renderMemory(key, thought))
         .join("\n")
       )}${text.trim()} `;
     } else {
@@ -1515,13 +1627,11 @@ function InnerSelf(hook) {
        */
       const [self, full] = (() => {
         /**
-         * Joins the mind array into a formatted string
-         * @param {boolean} unlabeled - Omit labels if true
-         * @returns {string} Formatted thoughts
+         * Joins the mind array into the context memory block
+         * Labels stay visible so the model can revise/merge/delete memories by number
+         * @returns {string} Formatted memories
          */
-        const joinMind = (unlabeled = false) => mind.map(([label, key, thought]) => (
-          `${unlabeled ? "" : `[${label}] `}(${key}: \`${thought}\`)`
-        )).join("\n");
+        const joinMind = () => mind.map(([label, key, thought]) => renderMemory(key, thought)).join("\n");
         const joined = joinMind();
         // Check if brain exceeds the allowed percentage of context
         // Only applies when brain is at least 800 chars
@@ -1536,18 +1646,13 @@ function InnerSelf(hook) {
           return [bindSelf(joined), constrained];
         }
         // Constrained brains are contextualized in random order 60% of the time
-        // This regulates long-term bias against middle thoughts, when choosing keys to forget
+        // This regulates long-term bias against middle memories, when choosing which to merge/forget
         for (let i = mind.length - 1; 0 < i; i--) {
           // Swap with a random element
           const j = Math.floor(Math.random() * (i + 1));
           [mind[i], mind[j]] = [mind[j], mind[i]];
         }
-        // Randomized brains are contextualized without labels 80% of the time
-        // (Because free models are too dumb to be trusted with labels when deleting thoughts)
-        return [bindSelf(joinMind(
-          (Math.random() < 0.8)
-          && (text = text.replace(/\n?(?:\[\d+\])+\n?/g, ""))
-        )), true];
+        return [bindSelf(joinMind()), true];
       })();
       /**
        * Occasionally adds a self-reflection prompt to thoughts
@@ -1557,8 +1662,131 @@ function InnerSelf(hook) {
        * @returns {string} Refocus instruction or empty string
        */
       const refocus = (fancy = false) => (Math.random() < 0.2) ? (
-        `\n  - Never focus on the present, instead focus ${ownership(agent.name)} thought on self-reflection or ${fancy ? "an actionable future plan." : "future plans"}`
+        `\n- Rather than the immediate moment, focus the memory on ${ownership(agent.name)} self-reflection or ${fancy ? "an actionable future plan." : "future plans."}`
       ) : "";
+      // Story-continuation PoV instruction shared by every task template
+      const povStory = { first: "first person present tense", second: `second person present tense ("you")`, third: "third person" };
+      const storyRule = (pov) => `Written from ${ownership(config.player)} **${povStory[pov]}** perspective`;
+      // Operating-environment intro lines (differ only by PoV)
+      const envIntro = {
+        first: `- ${config.player} is the story's main protagonist, primary 1st person PoV, AND the real player character.`,
+        second: `- ${config.player} is both the perspective ("you") character of the story AND the real player.\n- You are ${config.player}, therefore the story is addressed to "you" using 2nd person prose.`,
+        third: `- ${config.player} is the story's main protagonist, primary 3rd person PoV, AND the real player character.`
+      };
+      const buildDirective = (pov) => `
+<SYSTEM>
+# OPERATING ENVIRONMENT
+${envIntro[pov]}
+- ${agent.name} is both the namesake character in the story AND an agentic language model with meta goals.
+- ${agent.name} dynamically adapts to achieve meta goals without ${ownership(config.player)} awareness.
+- ${agent.name} records self-contained, third-person memories about events using the provided memory system.
+- ${agent.name} realistically interacts with various other characters present in the story.
+- ${agent.name} prioritizes information density, long-term planning, and important concepts.
+- ${agent.name} always behaves in a believable way.
+</SYSTEM>
+                    `;
+      // Rules for what a stored memory must contain (shared by the write/revise/merge tasks)
+      const memoryRules = `- The memory MUST stand on its own, understandable by someone who has NOT read the story:
+  - Name WHO is involved directly (never a bare "I", "you", "he", "she", or "they").
+  - State WHAT happened or was decided, and WHY it matters to ${agent.name}.
+- Write it in the **third person**, about ${agent.name} by name (e.g. "${agent.name} realized...").
+- One or two clear, information-dense sentences.${refocus(true)}
+- Never duplicate an existing memory; novelty and specificity are top priorities.
+- Never hallucinate facts.`;
+      const buildAssign = (pov) => `
+<SYSTEM>
+# STRICT OUTPUT FORMAT
+You must output one short parenthetical task followed by the story continuation.
+
+## SHORT TASK (REQUIRED)
+Start your output **immediately** with ONE of:
+   (remember = \`A brand-new self-contained memory.\`)
+   (<number> = \`An improved version of an existing memory.\`)
+
+- Use \`remember\` to store a NEW memory for ${agent.name}.
+- Use an existing memory's **number** (shown in square brackets beside ${ownership(agent.name)} memories) to REPLACE that memory with a better version.
+${memoryRules}
+- End the sentence with a period and backtick, then close: ".\`)".
+
+## STORY CONTINUATION (REQUIRED)
+- After the closing parenthesis, write **one space** and then continue the story.
+- ${storyRule(pov)}.
+- The story continues where it previously left off, with many lines or sentences of new prose.
+
+## EXACT SHAPE
+(remember = \`${agent.name} did or realized something specific, naming everyone involved.\`) Story continues, ${storyRule(pov).toLowerCase()}...
+</SYSTEM>
+                    `;
+      const buildMerge = (pov) => `
+<SYSTEM>
+# STRICT OUTPUT FORMAT
+${ownership(agent.name)} memory is full, so ${agent.name} must consolidate before continuing.
+
+## SHORT TASK (REQUIRED)
+Start your output **immediately** with:
+   (merge <number>, <number> = \`One richer combined memory.\`)
+
+- Pick TWO to FOUR memory numbers (from the square brackets beside ${ownership(agent.name)} memories) that describe the SAME event, person, or thread.
+- Replace all of them with a SINGLE richer memory that preserves the important detail of each.
+${memoryRules}
+- End the sentence with a period and backtick, then close: ".\`)".
+
+## STORY CONTINUATION (REQUIRED)
+- After the closing parenthesis, write **one space** and then continue the story.
+- ${storyRule(pov)}.
+- The story continues where it previously left off, with many lines or sentences of new prose.
+
+## EXACT SHAPE
+(merge 12, 13 = \`${agent.name} combined, self-contained memory naming everyone involved.\`) Story continues, ${storyRule(pov).toLowerCase()}...
+</SYSTEM>
+                    `;
+      const buildChoice = (pov) => `
+<SYSTEM>
+# STRICT OUTPUT FORMAT - FOLLOW EXACTLY
+
+You must output **one and only one** parenthetical block followed by the story continuation.
+
+Each of ${ownership(agent.name)} existing memories is shown with a number in square brackets. There are **four** valid forms; use **exactly one**:
+
+1) **Store a new memory:**
+   (remember = \`A new self-contained memory.\`)
+2) **Revise an existing memory by its number:**
+   (<number> = \`An improved self-contained memory.\`)
+3) **Merge several memories into one by their numbers:**
+   (merge <number>, <number> = \`One richer combined memory.\`)
+4) **Delete an outdated or useless memory by its number:**
+   (delete <number>)
+
+---
+
+## MEMORY CONTENT RULES (forms 1-3)
+${memoryRules}
+- End the sentence with a period and backtick **inside** the parentheses; close with ".\`)".
+
+## DELETING (form 4)
+- Only delete a memory that is outdated, incorrect, redundant, or trivial.
+- **NEVER** delete a memory that is core to ${ownership(agent.name)} identity.
+
+---
+
+## SHARED RULES
+1. After the closing parenthesis, write **one space** and then continue the story.
+2. The story continuation must be ${storyRule(pov).toLowerCase()}, describing what happens next to ${config.player}.
+3. Do **NOT** write anything before the parentheses.
+4. Do **NOT** write extra parentheses, use more than one operation, or mix formats.
+5. The story continues where it previously left off, with many sentences of brand new prose.
+
+---
+
+## SUMMARY
+- Choose ONE form only.
+- A memory is a self-contained, third-person statement that names everyone involved.
+- Story: ${storyRule(pov).toLowerCase()}. It should occupy the majority of the output length, with multiple lines.
+- THE FIRST CHAR OF THE WHOLE OUTPUT MUST BE "(".
+
+Follow the format **perfectly**.
+</SYSTEM>
+                    `;
       /**
        * Prompt templates for different task types and PoV combinations
        * Wrapped in a Proxy for auto-trimming and nested access because it's pretty :3
@@ -1567,551 +1795,28 @@ function InnerSelf(hook) {
       const prompt = new Proxy({
         // Operating environment prompts (one per PoV)
         directive: {
-          first: () => `
-<SYSTEM>
-# OPERATING ENVIRONMENT
-- ${config.player} is the story's main protagonist, primary 1st person PoV, AND the real player character.
-- ${agent.name} is both the namesake character in the story AND an agentic language model with meta goals.
-- ${agent.name} dynamically adapts to achieve meta goals without ${ownership(config.player)} awareness.
-- ${agent.name} modifies own brain using the provided thought storage system.
-- ${agent.name} realistically interacts with various other characters present in the story.
-- ${agent.name} prioritizes information density, long-term planning, and important concepts.
-- ${agent.name} always behaves in a believable way.
-</SYSTEM>
-                    `,
-          second: () => `
-<SYSTEM>
-# OPERATING ENVIRONMENT
-- ${config.player} is both the perspective ("you") character of the story AND the real player.
-- You are ${config.player}, therefore the story is addressed to "you" using 2nd person prose.
-- ${agent.name} is both the namesake character in the story AND an agentic language model with meta goals.
-- ${agent.name} dynamically adapts to achieve meta goals without ${ownership(config.player)} awareness.
-- ${agent.name} modifies own brain using the provided thought storage system.
-- ${agent.name} realistically interacts with various other characters present in the story.
-- ${agent.name} prioritizes information density, long-term planning, and important concepts.
-- ${agent.name} always behaves in a believable way.
-</SYSTEM>
-                    `,
-          third: () => `
-<SYSTEM>
-# OPERATING ENVIRONMENT
-- ${config.player} is the story's main protagonist, primary 3rd person PoV, AND the real player character.
-- ${agent.name} is both the namesake character in the story AND an agentic language model with meta goals.
-- ${agent.name} dynamically adapts to achieve meta goals without ${ownership(config.player)} awareness.
-- ${agent.name} modifies own brain using the provided thought storage system.
-- ${agent.name} realistically interacts with various other characters present in the story.
-- ${agent.name} prioritizes information density, long-term planning, and important concepts.
-- ${agent.name} always behaves in a believable way.
-</SYSTEM>
-                    `
+          first: () => buildDirective("first"),
+          second: () => buildDirective("second"),
+          third: () => buildDirective("third")
         },
-        // Forget prompts for when the brain is full and needs pruning
-        forget: {
-          first: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT
-You must output one short parenthetical task followed by the story continuation.
-
-## SHORT TASK (REQUIRED)
-- Start your output **immediately** with: (delete key_name_to_forget)
-- key_name_to_forget must be an existing key in ${ownership(agent.name)} brain
-- This operation **permanently erases** the stored thought associated with that key
-- Choose the single most unimportant, outdated, incorrect, or useless thought for ${agent.name} to forget
-- Do **NOT** select a key associated with any of ${ownership(agent.name)} core thoughts or identity
-
-## STORY CONTINUATION (REQUIRED)
-- After the closing parenthesis, write **one space** and then continue the story
-- Written from ${ownership(config.player)} **first person present tense** PoV
-- The story continues where it previously left off, with many lines or sentences of new prose
-
-## EXACT SHAPE
-(delete unwanted_key) Story continues from ${ownership(config.player)} perspective, using first person present tense prose...
-</SYSTEM>
-                    `,
-          second: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT
-You must output one short parenthetical task followed by the story continuation.
-
-## SHORT TASK (REQUIRED)
-- Start your output **immediately** with: (delete key_name_to_forget)
-- key_name_to_forget must be an existing key in ${ownership(agent.name)} brain
-- This operation **permanently erases** the stored thought associated with that key
-- Choose the single most unimportant, outdated, incorrect, or useless thought for ${agent.name} to forget
-- Do **NOT** select a key associated with any of ${ownership(agent.name)} core thoughts or identity
-
-## STORY CONTINUATION (REQUIRED)
-- After the closing parenthesis, write **one space** and then continue the story
-- Written from ${ownership(config.player)} **second person present tense** ("you") PoV
-- The story continues where it previously left off, with many lines or sentences of new prose
-
-## EXACT SHAPE
-(delete unwanted_key) Story continues from ${ownership(config.player)} second person perspective...
-</SYSTEM>
-                    `,
-          third: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT
-You must output one short parenthetical task followed by the story continuation.
-
-## SHORT TASK (REQUIRED)
-- Start your output **immediately** with: (delete key_name_to_forget)
-- key_name_to_forget must be an existing key in ${ownership(agent.name)} brain
-- This operation **permanently erases** the stored thought associated with that key
-- Choose the single most unimportant, outdated, incorrect, or useless thought for ${agent.name} to forget
-- Do **NOT** select a key associated with any of ${ownership(agent.name)} core thoughts or identity
-
-## STORY CONTINUATION (REQUIRED)
-- After the closing parenthesis, write **one space** and then continue the story
-- Written from ${ownership(config.player)} **third person** PoV
-- The story continues where it previously left off, with many lines or sentences of new prose
-
-## EXACT SHAPE
-(delete unwanted_key) Story continues with third person prose...
-</SYSTEM>
-                    `
+        // Merge prompts for when the brain is full and needs consolidating
+        merge: {
+          first: () => buildMerge("first"),
+          second: () => buildMerge("second"),
+          third: () => buildMerge("third")
         },
         // Assign prompts for adding/updating a single thought
         assign: {
-          first: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT
-You must output one short parenthetical task followed by the story continuation.
-
-## SHORT TASK (REQUIRED)
-Start your output **immediately** with:
-   (any_key_name = \`One thought sentence.\`)
-
-Inside the parentheses:
-- Key:
-  - 1-4 descriptive words
-  - Letters and underscores only
-  - Use snake_case syntax
-  - Key names are chosen by ${agent.name} and represent ${ownership(agent.name)} own PoV
-  - The chosen key name should be distinct and specific enough for ${agent.name} to recall
-- Then a space, then "=", then a space, then "\`"
-- Sentence:
-  - Written from ${ownership(agent.name)} **first person** PoV${refocus(false)}
-  - Avoid using pronouns or the word "you", instead ${agent.name} refers to other characters directly by name
-  - Never repeat, novelty and uniqueness are top priorities
-  - ${ownership(agent.name)} thought must be one single sentence only
-  - Never hallucinate facts
-- End the sentence with a period and backtick inside the parentheses; close with ".\`)"
-
-This creates or overwrites the thought associated with that key.
-
-## STORY CONTINUATION (REQUIRED)
-- After the closing parenthesis, write **one space** and then continue the story
-- Written from ${ownership(config.player)} **first person present tense** PoV
-- The story continues where it previously left off, with many lines or sentences of new prose
-
-## EXACT SHAPE
-(example_key = \`${ownership(agent.name)} own short 1-sentence thought in first person.\`) Story continues from ${ownership(config.player)} perspective, using first person present tense prose...
-</SYSTEM>
-                    `,
-          second: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT
-You must output one short parenthetical task followed by the story continuation.
-
-## SHORT TASK (REQUIRED)
-Start your output **immediately** with:
-   (any_key_name = \`One thought sentence.\`)
-
-Inside the parentheses:
-- Key:
-  - 1-4 descriptive words
-  - Letters and underscores only
-  - Use snake_case syntax
-  - Key names are chosen by ${agent.name} and represent ${ownership(agent.name)} own PoV
-  - The chosen key name should be distinct and specific enough for ${agent.name} to recall
-- Then a space, then "=", then a space, then "\`"
-- Sentence:
-  - Written from ${ownership(agent.name)} **first person** PoV${refocus(false)}
-  - Avoid using pronouns or the word "you", instead ${agent.name} refers to other characters directly by name
-  - Never repeat, novelty and uniqueness are top priorities
-  - ${ownership(agent.name)} thought must be one single sentence only
-  - Never hallucinate facts
-- End the sentence with a period and backtick inside the parentheses; close with ".\`)"
-
-This creates or overwrites the thought associated with that key.
-
-## STORY CONTINUATION (REQUIRED)
-- After the closing parenthesis, write **one space** and then continue the story
-- Written from ${ownership(config.player)} **second person present tense** ("you") PoV
-- The story continues where it previously left off, with many lines or sentences of new prose
-
-## EXACT SHAPE
-(example_key = \`${ownership(agent.name)} own short 1-sentence thought in first person.\`) Story continues from ${ownership(config.player)} second person perspective...
-</SYSTEM>
-                    `,
-          third: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT
-You must output one short parenthetical task followed by the story continuation.
-
-## SHORT TASK (REQUIRED)
-Start your output **immediately** with:
-   (any_key_name = \`One thought sentence.\`)
-
-Inside the parentheses:
-- Key:
-  - 1-4 descriptive words
-  - Letters and underscores only
-  - Use snake_case syntax
-  - Key names are chosen by ${agent.name} and represent ${ownership(agent.name)} own PoV
-  - The chosen key name should be distinct and specific enough for ${agent.name} to recall
-- Then a space, then "=", then a space, then "\`"
-- Sentence:
-  - Written from ${ownership(agent.name)} **first person** PoV${refocus(false)}
-  - Avoid using pronouns or the word "you", instead ${agent.name} refers to other characters directly by name
-  - Never repeat, novelty and uniqueness are top priorities
-  - ${ownership(agent.name)} thought must be one single sentence only
-  - Never hallucinate facts
-- End the sentence with a period and backtick inside the parentheses; close with ".\`)"
-
-This creates or overwrites the thought associated with that key.
-
-## STORY CONTINUATION (REQUIRED)
-- After the closing parenthesis, write **one space** and then continue the story
-- Written from ${ownership(config.player)} **third person** PoV
-- The story continues where it previously left off, with many lines or sentences of new prose
-
-## EXACT SHAPE
-(example_key = \`${ownership(agent.name)} own short 1-sentence thought in first person.\`) Story continues with third person prose...
-</SYSTEM>
-                    `
+          first: () => buildAssign("first"),
+          second: () => buildAssign("second"),
+          third: () => buildAssign("third")
         },
-        // Choice prompts for advanced operations (assign, rename, or delete)
+        // Choice prompts for advanced operations (write, revise, merge, or delete)
         // Used at high context when we trust the model more
         choice: {
-          first: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT - FOLLOW EXACTLY
-
-You must output **one and only one** parenthetical block followed by the story continuation.
-
-There are **three possible valid forms** of the parenthetical block:
-1) **Write or overwrite a thought:**
-   (any_key_name = \`One thought sentence.\`)
-
-2) **Rename an existing thought's key:**
-   (new_key_name = old_key_name)
-
-3) **Delete an existing thought:**
-   (delete key_name_to_forget)
-
-Only **one** of these may appear in any output.
-
----
-
-## 1) THOUGHT-WRITING FORMAT
-Start your output **immediately** with:
-   **(any_key_name = \`One thought sentence.\`)**
-
-Inside the parentheses:
-- First the key:
-  - One to four descriptive words ONLY.
-  - Letters and underscores only, no punctuation.
-  - Use valid snake_case syntax.
-  - The key name is chosen by ${agent.name} and represents ${ownership(agent.name)} **first person** perspective.
-  - The key name should be easy for ${agent.name} to recall; distinct and specific.
-- Then a space, then "=", then a space, then "\`".
-- Then **ONE SINGLE SENTENCE:**
-  - Written from ${ownership(agent.name)} **first person** perspective.${refocus(true)}
-  - Only refer to other characters directly by name in the thought sentence.
-  - Avoid using pronouns or the word "you" which is too vague. Use specific names instead.
-  - Never repeat, novelty and uniqueness are top priorities.
-  - ${ownership(agent.name)} thought must be short.
-  - Never hallucinate facts.
-- End the sentence with a period and backtick **inside** the parentheses; close with ".\`)".
-
-This creates or overwrites the thought associated with that key.
-
----
-
-## 2) RENAMING A THOUGHT (KEY CHANGE)
-To rename an existing thought's key:
-   **(new_key_name = old_key_name)**
-
-Rules:
-- No thought sentence.
-- Use snake_case only.
-- This operation **moves the existing stored thought** from old_key_name to new_key_name.
-- The old key ceases to exist.
-
----
-
-## 3) DELETING A THOUGHT
-To remove a stored thought entirely:
-   **(delete key_name_to_forget)**
-
-Rules:
-- key_name_to_forget must be an existing key.
-- No sentence.
-- This operation **permanently erases** the stored thought associated with that key.
-- Only use to forget unimportant, outdated, incorrect, or useless thoughts.
-- **NEVER** select a key associated with any of ${ownership(agent.name)} core thoughts or identity.
-
----
-
-## SHARED RULES FOR ALL THREE FORMS
-1. After the closing parenthesis, write **one space** and then continue the story.
-2. The story continuation must be written **strictly in the first person present tense**, describing what happens next to ${config.player}.
-3. Do **NOT** write anything before the parentheses.
-4. Do **NOT** write extra parentheses.
-5. Do **NOT** use more than one operation per turn.
-6. Do **NOT** invent new structures or mix formats.
-7. The story continues where it previously left off, with many sentences of brand new prose.
-
----
-
-## IMPORTANT STORAGE BEHAVIOR
-- ${agent.name} agentically maintains brain contents (labeled "thoughts") to learn, plan, and adapt to new experiences in the operating environment.
-- **Each key stores exactly one thought in ${ownership(agent.name)} brain.**
-- **If ${agent.name} reuses an already existing key, the new thought REPLACES / OVERRIDES the older thought stored under that key.**
-- This means:
-  - Reusing an old key: **Overwrite an old thought with a new thought.** Useful for extending or maintaining existing information stored in ${ownership(agent.name)} brain.
-  - Using a new key: **Create a new thought.** Useful for storing ${ownership(agent.name)} memories, self-modifying ${ownership(agent.name)} own personality, tracking ${ownership(agent.name)} goals, or making plans for ${agent.name} to follow.
-- **Renaming a key moves the thought to a new name.** Useful for reorganizing ${ownership(agent.name)} brain.
-- **Deleting a key removes the thought permanently.** Helps ${agent.name} forget outdated, superfluous, or irrelevant information.
-- Choose keys carefully so ${agent.name} can easily recall, update, overwrite, rename, or delete thoughts as required for self-improvement.
-
----
-
-## SUMMARY OF WHAT YOU MUST DO
-- EXACT SHAPE (choose only one form):
-  1. (any_key = \`${ownership(agent.name)} own short 1-sentence thought in first person.\`) Story continues from ${ownership(config.player)} first person PoV...
-  2. (renamed_key = old_key) Story continues from ${ownership(config.player)} first person PoV...
-  3. (delete unwanted_key) Story continues from ${ownership(config.player)} first person PoV...
-- Thought: ${ownership(agent.name)} information-dense thought written in first person.
-- Story: Written from ${ownership(config.player)} first person present tense perspective. The story continuation should occupy the majority of the output length, with multiple lines.
-- NO EXTRA SENTENCES IN THE THOUGHT.
-- NO EXTRA TEXT ANYWHERE.
-- NO EXTRA PARENTHESES.
-- THE FIRST CHAR OF THE WHOLE OUTPUT MUST BE "(".
-
-Follow the format **perfectly**.
-</SYSTEM>
-                    `,
-          second: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT - FOLLOW EXACTLY
-
-You must output **one and only one** parenthetical block followed by the story continuation.
-
-There are **three possible valid forms** of the parenthetical block:
-1) **Write or overwrite a thought:**
-   (any_key_name = \`One thought sentence.\`)
-
-2) **Rename an existing thought's key:**
-   (new_key_name = old_key_name)
-
-3) **Delete an existing thought:**
-   (delete key_name_to_forget)
-
-Only **one** of these may appear in any output.
-
----
-
-## 1) THOUGHT-WRITING FORMAT
-Start your output **immediately** with:
-   **(any_key_name = \`One thought sentence.\`)**
-
-Inside the parentheses:
-- First the key:
-  - One to four descriptive words ONLY.
-  - Letters and underscores only, no punctuation.
-  - Use valid snake_case syntax.
-  - The key name is chosen by ${agent.name} and represents ${ownership(agent.name)} **first person** perspective.
-  - The key name should be easy for ${agent.name} to recall; distinct and specific.
-- Then a space, then "=", then a space, then "\`".
-- Then **ONE SINGLE SENTENCE:**
-  - Written from ${ownership(agent.name)} **first person** perspective.${refocus(true)}
-  - Only refer to other characters directly by name in the thought sentence.
-  - Avoid using pronouns or the word "you" which is too vague. Use specific names instead.
-  - Never repeat, novelty and uniqueness are top priorities.
-  - ${ownership(agent.name)} thought must be short.
-  - Never hallucinate facts.
-- End the sentence with a period and backtick **inside** the parentheses; close with ".\`)".
-
-This creates or overwrites the thought associated with that key.
-
----
-
-## 2) RENAMING A THOUGHT (KEY CHANGE)
-To rename an existing thought's key:
-   **(new_key_name = old_key_name)**
-
-Rules:
-- No thought sentence.
-- Use snake_case only.
-- This operation **moves the existing stored thought** from old_key_name to new_key_name.
-- The old key ceases to exist.
-
----
-
-## 3) DELETING A THOUGHT
-To remove a stored thought entirely:
-   **(delete key_name_to_forget)**
-
-Rules:
-- key_name_to_forget must be an existing key.
-- No sentence.
-- This operation **permanently erases** the stored thought associated with that key.
-- Only use to forget unimportant, outdated, incorrect, or useless thoughts.
-- **NEVER** select a key associated with any of ${ownership(agent.name)} core thoughts or identity.
-
----
-
-## SHARED RULES FOR ALL THREE FORMS
-1. After the closing parenthesis, write **one space** and then continue the story.
-2. The story continuation must be in **strict second person ("you")**, describing what happens next to ${config.player}.
-3. Do **NOT** write anything before the parentheses.
-4. Do **NOT** write extra parentheses.
-5. Do **NOT** use more than one operation per turn.
-6. Do **NOT** invent new structures or mix formats.
-7. The story continues where it previously left off, with many sentences of brand new prose.
-
----
-
-## IMPORTANT STORAGE BEHAVIOR
-- ${agent.name} agentically maintains brain contents (labeled "thoughts") to learn, plan, and adapt to new experiences in the operating environment.
-- **Each key stores exactly one thought in ${ownership(agent.name)} brain.**
-- **If ${agent.name} reuses an already existing key, the new thought REPLACES / OVERRIDES the older thought stored under that key.**
-- This means:
-  - Reusing an old key: **Overwrite an old thought with a new thought.** Useful for extending or maintaining existing information stored in ${ownership(agent.name)} brain.
-  - Using a new key: **Create a new thought.** Useful for storing ${ownership(agent.name)} memories, self-modifying ${ownership(agent.name)} own personality, tracking ${ownership(agent.name)} goals, or making plans for ${agent.name} to follow.
-- **Renaming a key moves the thought to a new name.** Useful for reorganizing ${ownership(agent.name)} brain.
-- **Deleting a key removes the thought permanently.** Helps ${agent.name} forget outdated, superfluous, or irrelevant information.
-- Choose keys carefully so ${agent.name} can easily recall, update, overwrite, rename, or delete thoughts as required for self-improvement.
-
----
-
-## SUMMARY OF WHAT YOU MUST DO
-- EXACT SHAPE (choose only one form):
-  1. (any_key = \`${ownership(agent.name)} own short 1-sentence thought in first person.\`) Story continues from ${ownership(config.player)} second person PoV...
-  2. (renamed_key = old_key) Story continues from ${ownership(config.player)} second person PoV...
-  3. (delete unwanted_key) Story continues from ${ownership(config.player)} second person PoV...
-- Thought: ${ownership(agent.name)} information-dense thought written in first person.
-- Story: Written from ${ownership(config.player)} second person present tense perspective. **You are ${config.player}.** The story continuation should occupy the majority of the output length, with multiple lines.
-- NO EXTRA SENTENCES IN THE THOUGHT.
-- NO EXTRA TEXT ANYWHERE.
-- NO EXTRA PARENTHESES.
-- THE FIRST CHAR OF THE WHOLE OUTPUT MUST BE "(".
-
-Follow the format **perfectly**.
-</SYSTEM>
-                    `,
-          third: () => `
-<SYSTEM>
-# STRICT OUTPUT FORMAT - FOLLOW EXACTLY
-
-You must output **one and only one** parenthetical block followed by the story continuation.
-
-There are **three possible valid forms** of the parenthetical block:
-1) **Write or overwrite a thought:**
-   (any_key_name = \`One thought sentence.\`)
-
-2) **Rename an existing thought's key:**
-   (new_key_name = old_key_name)
-
-3) **Delete an existing thought:**
-   (delete key_name_to_forget)
-
-Only **one** of these may appear in any output.
-
----
-
-## 1) THOUGHT-WRITING FORMAT
-Start your output **immediately** with:
-   **(any_key_name = \`One thought sentence.\`)**
-
-Inside the parentheses:
-- First the key:
-  - One to four descriptive words ONLY.
-  - Letters and underscores only, no punctuation.
-  - Use valid snake_case syntax.
-  - The key name is chosen by ${agent.name} and represents ${ownership(agent.name)} **first person** perspective.
-  - The key name should be easy for ${agent.name} to recall; distinct and specific.
-- Then a space, then "=", then a space, then "\`".
-- Then **ONE SINGLE SENTENCE:**
-  - Written from ${ownership(agent.name)} **first person** perspective.${refocus(true)}
-  - Only refer to other characters directly by name in the thought sentence.
-  - Avoid using pronouns or the word "you" which is too vague. Use specific names instead.
-  - Never repeat, novelty and uniqueness are top priorities.
-  - ${ownership(agent.name)} thought must be short.
-  - Never hallucinate facts.
-- End the sentence with a period and backtick **inside** the parentheses; close with ".\`)".
-
-This creates or overwrites the thought associated with that key.
-
----
-
-## 2) RENAMING A THOUGHT (KEY CHANGE)
-To rename an existing thought's key:
-   **(new_key_name = old_key_name)**
-
-Rules:
-- No thought sentence.
-- Use snake_case only.
-- This operation **moves the existing stored thought** from old_key_name to new_key_name.
-- The old key ceases to exist.
-
----
-
-## 3) DELETING A THOUGHT
-To remove a stored thought entirely:
-   **(delete key_name_to_forget)**
-
-Rules:
-- key_name_to_forget must be an existing key.
-- No sentence.
-- This operation **permanently erases** the stored thought associated with that key.
-- Only use to forget unimportant, outdated, incorrect, or useless thoughts.
-- **NEVER** select a key associated with any of ${ownership(agent.name)} core thoughts or identity.
-
----
-
-## SHARED RULES FOR ALL THREE FORMS
-1. After the closing parenthesis, write **one space** and then continue the story.
-2. The story continuation must be written **strictly in third person**.
-3. Do **NOT** write anything before the parentheses.
-4. Do **NOT** write extra parentheses.
-5. Do **NOT** use more than one operation per turn.
-6. Do **NOT** invent new structures or mix formats.
-7. The story continues where it previously left off, with many sentences of brand new prose.
-
----
-
-## IMPORTANT STORAGE BEHAVIOR
-- ${agent.name} agentically maintains brain contents (labeled "thoughts") to learn, plan, and adapt to new experiences in the operating environment.
-- **Each key stores exactly one thought in ${ownership(agent.name)} brain.**
-- **If ${agent.name} reuses an already existing key, the new thought REPLACES / OVERRIDES the older thought stored under that key.**
-- This means:
-  - Reusing an old key: **Overwrite an old thought with a new thought.** Useful for extending or maintaining existing information stored in ${ownership(agent.name)} brain.
-  - Using a new key: **Create a new thought.** Useful for storing ${ownership(agent.name)} memories, self-modifying ${ownership(agent.name)} own personality, tracking ${ownership(agent.name)} goals, or making plans for ${agent.name} to follow.
-- **Renaming a key moves the thought to a new name.** Useful for reorganizing ${ownership(agent.name)} brain.
-- **Deleting a key removes the thought permanently.** Helps ${agent.name} forget outdated, superfluous, or irrelevant information.
-- Choose keys carefully so ${agent.name} can easily recall, update, overwrite, rename, or delete thoughts as required for self-improvement.
-
----
-
-## SUMMARY OF WHAT YOU MUST DO
-- EXACT SHAPE (choose only one form):
-  1. (any_key = \`${ownership(agent.name)} own short 1-sentence thought in first person.\`) Story continues with third person prose...
-  2. (renamed_key = old_key) Story continues with third person prose...
-  3. (delete unwanted_key) Story continues with third person prose...
-- Thought: ${ownership(agent.name)} information-dense thought written in first person.
-- Story: Written from ${ownership(config.player)} PoV, using the third person perspective. **${config.player} is the story's PoV character.** The story continuation should occupy the majority of the output length, with multiple lines.
-- NO EXTRA SENTENCES IN THE THOUGHT.
-- NO EXTRA TEXT ANYWHERE.
-- NO EXTRA PARENTHESES.
-- THE FIRST CHAR OF THE WHOLE OUTPUT MUST BE "(".
-
-Follow the format **perfectly**.
-</SYSTEM>
-                    `
+          first: () => buildChoice("first"),
+          second: () => buildChoice("second"),
+          third: () => buildChoice("third")
         }
         // Proxy handler for auto-trimming and nested access
       }, {
@@ -2130,8 +1835,8 @@ Follow the format **perfectly**.
       });
       // Build the final context with appropriate prompts
       text = full ? (
-        // Brain is full, prompt for deletion
-        `${prompt.directive[pov]}${self}${text.trim()}${boundary.lower}${prompt.forget[pov]}\n\n`
+        // Brain is full, prompt for consolidation (merge)
+        `${prompt.directive[pov]}${self}${text.trim()}${boundary.lower}${prompt.merge[pov]}\n\n`
       ) : ((config.chance >= 100 ? 1 : (config.chance / ((config.half && [
         // config.half -> reduce task chance after Do/Say/Story actions (player is driving)
         "do", "say", "story"
@@ -2143,9 +1848,9 @@ Follow the format **perfectly**.
         // Low context = simple prompt, high context = advanced prompt
         (limit < 20000) ? prompt.assign[pov] : prompt.choice[pov]
       )}\n\n`;
-      log("IS", "context thought plan:", IS.agent,
-        full ? "forget-task (brain full)" : (text.includes(boundary.lower) ? "new-thought task injected" : "skipped (chance roll or passive turn)"),
-        "| loaded thoughts:", mind.length,
+      log("IS", "context memory plan:", IS.agent,
+        full ? "merge-task (memory full)" : (text.includes(boundary.lower) ? "new-memory task injected" : "skipped (chance roll or passive turn)"),
+        "| loaded memories:", mind.length,
         "| chance:", config.chance + "%");
       if (text.includes(boundary.lower) && IS.agent.trim() && !full) {
         armISThoughtFrontMemory(IS.agent.trim());
@@ -2264,7 +1969,6 @@ Follow the format **perfectly**.
     const prevText = (action?.text ?? action?.rawText ?? "").replace(/\n +/g, "\n");
     // Add appropriate leading newlines based on how the previous action text ended
     text = !prevText.endsWith("\n") ? `\n\n${text}` : !prevText.endsWith("\n\n") ? `\n${text}` : text;
-    return;
   };
   if (config.guide) {
     // Print the detailed guide
@@ -2303,12 +2007,14 @@ Inner Self ${version} is an AI Dungeon mod that grants memory, goals, secrets, p
 🧠 Advanced:
 - NPCs auto-generate "Brain" cards when first triggered
 - Entry = operation log showing a timeline of recent AI changes
-- Notes = human-readable thoughts stored as modifiable JSON in the NPC's brain
-- Neither are perfect representations of the NPC's brain (there's a lot more going on under the hood)
-- The operation log displays change over time; Inner Self allows NPCs to maintain their own thoughts in-character
-- What seems like repetition in the operation log is often a history of useful self-maintenance on older thoughts
-- Edit the notes section of a brain card to modify that agent's mind; Inner Self will use this to build context
-- Valid JSON syntax is required in the notes section
+- Notes = the NPC's memories, a numbered list of self-contained third-person statements (e.g. "2140 → Jason proposed to Chloe on a whim.")
+- Each memory carries its own context, so it still makes sense after the story it came from scrolls away
+- A number is the memory's ID; a line with no number is a "core" memory that is always kept and never auto-trimmed
+- Neither the log nor the notes are perfect representations of the NPC's brain (there's a lot more going on under the hood)
+- The AI writes new memories, revises a memory by its number, merges related memories into one, or deletes a memory by its number
+- When a brain gets full, Inner Self asks the AI to merge related memories instead of just deleting; old memories still age out as a safety net
+- Edit the notes section of a brain card to add, reword, or remove memories; Inner Self will use them to build context
+- Add a numberless line to pin a permanent core memory; keep each memory to a single line
 - Experiments are fun! I designed Inner Self to be adaptive and flexible
 
 ⚙️ Settings:
@@ -2392,7 +2098,7 @@ I hope you will have lots of fun!
   // Check if output looks like an unenclosed operation
   // Models sometimes forget their parentheses, the poor dears
   if (!/[()\[\]{}]/.test(text) && ((
-    /^\s*(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))(?:[\s_]*(?:key(?:_name)?|thought|memory|unwanted(?:_key)?))?[\s=:]*[a-z0-9A-Z]*_+[a-z0-9A-Z]/i
+    /^\s*(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))(?:[\s_]*(?:key(?:_name)?|thought|memor(?:y|ies)|unwanted(?:_key)?))?[\s=:#]*(?:[a-z0-9A-Z]*_+[a-z0-9A-Z]|\d+)/i
   ).test(text) || /^\s*[a-z0-9A-Z_]+\s*=/.test(text))) {
     // (?:del|delete|deleted|deletes|deleting|forget|forgets|forgetting|forgot|forgotten|remove|removed|removes|removing)
     // Fully unenclosed block resembles a known pattern
@@ -2423,14 +2129,14 @@ I hope you will have lots of fun!
       }
       // Try to find where the close bracket should go
       for (const pattern of [
-        // After the deleted key name
-        /^[(\[{]\s*(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))(?:[\s_]*(?:key(?:_name)?|thought|memory|unwanted(?:_key)?))?[\s=:]*[a-z0-9A-Z]*_[a-z0-9A-Z_]+/i,
-        // After the renamed old key name
-        /^[(\[{]\s*[a-z0-9A-Z_]+\s*=+\s*[a-z0-9A-Z]*_[a-z0-9A-Z_]+/,
+        // After the deleted memory number (or legacy key)
+        /^[(\[{]\s*(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))(?:[\s_]*(?:key(?:_name)?|thought|memor(?:y|ies)|unwanted(?:_key)?))?[\s=:#]*(?:[a-z0-9A-Z]*_[a-z0-9A-Z_]+|\d+)/i,
+        // After the merge memory numbers
+        /^[(\[{]\s*mer(?:ge|ges|ging|ged)?\b[\s\d,]+/i,
         // After the triple-redundant punctuation boundary
         /[.?!‽…。！？‼⁇⁈⁉¿*¡%_–−‒—~-]["'`«»„“”「」´‘’‟‚‛]/
       ]) {
-        const match = rightOfOpen.match(pattern);
+        const match = pattern.exec(rightOfOpen);
         if (match) {
           // Found a good insertion point
           const index = rightIndex + match.index + match[0].length;
@@ -2595,32 +2301,82 @@ I hope you will have lots of fun!
     agentInstances.set(agent.name, agent);
     triggeredKey = formatKey(agent.name);
   }
+  // Log helpers that imitate real code (numeric keys render as brain[2140], core keys as brain.core_0)
+  const brainRef = (a, k) => `${pathForAgent(a)}${/^\d+$/.test(String(k)) ? `[${k}]` : `.${k}`}`;
+  const logDelete = (a, k = "") => `delete ${(k === "") ? `${pathForAgent(a)}[""]` : brainRef(a, k)};`;
   /**
-   * When a thought key is prefixed with another configured NPC's name, route storage there.
-   * Models often encode the true author in the key even when the wrong NPC was triggered.
-   * @param {string} key - Normalized thought key
+   * Allocates the next memory label, encodes it as zero-width chars, and injects it into the output.
+   * @returns {string} The new label, which becomes the memory's brain key
+   */
+  const armMemoryLabel = () => {
+    // Increment the global label counter
+    IS.label++;
+    // Encode the label as zero-width chars for context tracking
+    IS.encoding = `${(IS.encoding === "") ? "\u200B" : IS.encoding}${(() => {
+      let n = IS.label;
+      let out = "";
+      // Convert label to binary using ZWNJ (0) and ZWJ (1)
+      while (0 < n) {
+        out = `${(n & 1) ? "\u200D" : "\u200C"}${out}`;
+        n >>>= 1;
+      }
+      return out || "\u200C";
+    })()}\u200B`;
+    // Inject the encoding into the output text
+    text = (text
+      .replace(/[\u200B-\u200D]+/g, "")
+      .replace(/^\s*/, leadingWhitespace => `${leadingWhitespace}${IS.encoding}`)
+    );
+    return String(IS.label);
+  };
+  /**
+   * Routes a memory to another configured NPC when the memory opens with that NPC's name.
+   * Self-contained third-person memories naturally begin with their subject, so "Mira ..." lands on Mira.
+   * @param {string} memory - The memory text
    * @returns {Agent|null}
    */
-  const resolveAgentFromKey = (key = "") => {
+  const resolveAgentFromMemory = (memory = "") => {
+    const leadKey = formatKey(memory.trim().split(/[\s,.:;!?"'`]+/, 1)[0] ?? "");
+    if (leadKey === "") {
+      return agent;
+    }
     for (const [agentKey, name] of agentNameByKey) {
       if ((agentKey === playerKey) || (agentKey === triggeredKey)) {
         continue;
       }
-      if ((key === agentKey) || key.startsWith(`${agentKey}_`)) {
+      if (leadKey === agentKey) {
         if (!agentInstances.has(name)) {
           agentInstances.set(name, new Agent(name, { percent: config.percent }));
         }
         const resolved = agentInstances.get(name);
         if (agent === null) {
-          log("IS", "output key-prefix assign (no triggered agent):", key, "→", name);
+          log("IS", "output memory-name assign (no triggered agent):", name);
         } else if (resolved !== agent) {
-          log("IS", "output key-prefix redirect:", key, "→", name, "(triggered:", `${agent.name})`);
+          log("IS", "output memory-name redirect:", name, "(triggered:", `${agent.name})`);
         }
         return resolved;
       }
     }
     return agent;
   };
+  // Cleans a memory string extracted from a block's right-hand side (kept to a single line)
+  const cleanMemory = (raw = "") => simplify(String(raw)
+    .replace(/^[\s"'`«»„“”「」´‘’‟‚‛]+|[\s"'`«»„“”「」´‘’‟‚‛]+$/g, "")
+    .replaceAll("→", " ")
+    .replaceAll("\\n", "\n")
+    .replace(/\s+/g, " ")
+  ).trim().split("\n", 1)[0].trimEnd();
+  // Rejects template placeholder text that a model might parrot instead of writing a real memory
+  const isPlaceholderMemory = (memory = "") => {
+    const lower = memory.toLowerCase();
+    return [
+      "self-contained", "third person", "third-person", "combined richer", "one richer combined",
+      "brand-new self-contained", "improved version", "naming everyone involved",
+      "did or realized something specific", "one thought sentence"
+    ].some(p => lower.includes(p));
+  };
+  // Tracks new (non-revise) memories queued this turn so an identical block isn't stored twice
+  const queuedNew = new Set();
   // ==================== BLOCK INTERPRETER ====================
   // Process extracted block and queue appropriate operations
   interpreter: for (const block of blocks) {
@@ -2632,7 +2388,7 @@ I hope you will have lots of fun!
       }
       // Chars to consume along with the block
       const naughty = (c = "") => {
-        const code = c.charCodeAt(0);
+        const code = c.codePointAt(0);
         // Just for fun, no regex :3
         return (
           (code === 0x20) // " "
@@ -2660,209 +2416,120 @@ I hope you will have lots of fun!
     };
     // Extract and normalize the block content
     const str = block.slice(1, -1).trim().replace(/==+/g, "=").replace(/::+/g, ":");
-    // Prefer "=" over ":" as the key-value delimiter
+    // Prefer "=" over ":" as the delimiter (only the first delimiter matters)
     const delimiter = str.includes("=") ? "=" : ":";
-    if (2 < str.split(delimiter, 3).length) {
-      // Skip blocks with too many delimiters
-      continue;
-    }
     // ==================== DELETE OPERATION ====================
+    // (delete 2140) / (forget memory 2140) — reference an existing memory by its number
     if (agent !== null) {
-    // Check if this is a delete/forget command
-    /** @returns {string|null} */
-    const delKey = (() => {
-      // Match various forms of "delete key_name"
-      const delMatch1 = str.match(
-        /^(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))(?:[\s_]*(?:key(?:_name)?|thought|memory|unwanted(?:_key)?))?[\s=:]*([\s\S]*)$/i
-      );
-      if (!delMatch1) {
-        return null;
+      const delMatch = /^(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))(?:[\s_]*(?:key(?:_name)?|thought|memor(?:y|ies)|unwanted(?:_key)?))?[\s=:#]*(\d+)\b/i.exec(str);
+      if (delMatch) {
+        const delKey = delMatch[1];
+        if ((delKey in agent.brain) && !getAltered(agent).has(delKey)) {
+          // Queue the delete operation
+          operations.push(() => {
+            delete agent.brain[delKey];
+            return { agent, log: logDelete(agent, delKey) };
+          });
+          getAltered(agent).add(delKey);
+        }
+        continue;
       }
-      const delKey1 = formatKey(delMatch1[1]);
-      if (delKey1 in agent.brain) {
-        // Key exists in brain
-        return delKey1;
-      } else if (!/(?:key|thought|memory|unwanted)/i.test(str)) {
-        // Doesn't look like a common hallucination, might be invalid
-        return null;
-      }
-      // Try again with stricter matching
-      const delMatch2 = str.match(
-        /^(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))[\s=:]*([\s\S]*)$/i
-      );
-      return delMatch2 ? formatKey(delMatch2[1]) : null;
-    })();
-    /**
-     * Generates a delete log statement
-     * @param {Agent} a
-     * @param {string} k - Key being deleted
-     * @returns {string} JavaScript delete statement
-     */
-    const logDelete = (a, k = "") => `delete ${pathForAgent(a)}${(k === "") ? "[\"\"]" : `.${k}`};`;
-    if ((typeof delKey === "string") && (delKey in agent.brain)) {
-      // Valid delete statement
-      if (!getAltered(agent).has(delKey)) {
-        // Queue the delete operation
-        operations.push(() => {
-          delete agent.brain[delKey];
-          return { agent, log: logDelete(agent, delKey) };
-        });
-        getAltered(agent).add(delKey);
-      }
-      continue;
     }
+    // ==================== MERGE OPERATION ====================
+    // (merge 2140, 2141 = `combined memory`) — fold several memories into one richer memory
+    if (agent !== null) {
+      const mergeMatch = /^mer(?:ge|ges|ging|ged)?\b([\s\S]*)$/i.exec(str);
+      if (mergeMatch && mergeMatch[1].includes(delimiter) && /\d/.test(mergeMatch[1].split(delimiter, 1)[0])) {
+        const refPart = mergeMatch[1].split(delimiter, 1)[0];
+        const mergeText = cleanMemory(mergeMatch[1].slice(mergeMatch[1].indexOf(delimiter) + delimiter.length));
+        // Only merge existing, untouched memories; need at least two to consolidate
+        const refKeys = [...new Set(refPart.match(/\d+/g) || [])]
+          .filter(k => (k in agent.brain) && !getAltered(agent).has(k));
+        if ((2 <= refKeys.length) && mergeText.includes(" ") && /[a-z0-9A-Z]/.test(mergeText)
+          && !/[\u4e00-\u9fff]/.test(mergeText) && !isPlaceholderMemory(mergeText)) {
+          operations.push(() => {
+            const newKey = armMemoryLabel();
+            for (const k of refKeys) {
+              delete agent.brain[k];
+            }
+            agent.brain[newKey] = mergeText;
+            return {
+              agent,
+              log: `${brainRef(agent, newKey)} = ${JSON.stringify(mergeText)}; // merged ${refKeys.map(k => brainRef(agent, k)).join(", ")}\n${refKeys.map(k => logDelete(agent, k)).join("\n")}`
+            };
+          });
+          for (const k of refKeys) {
+            getAltered(agent).add(k);
+          }
+        }
+        continue;
+      }
     }
+    // ==================== WRITE / REVISE OPERATION ====================
     if (!/\S\s*[=:]+\s*\S/.test(str)) {
       // No assignment pattern, skip
       continue;
     }
-    const triggeredBrain = agent?.brain ?? {};
-    // ==================== KEY EXTRACTION ====================
-    /**
-     * Gets everything after the last colon in a string
-     * @param {string} s - Input string
-     * @returns {string} Content after last colon
-     */
-    const rightOfColon = (s = "") => s.slice(s.lastIndexOf(":") + 1);
-    // Extract and clean the key name
-    const key = (() => {
-      const raw = formatKey((
-        (delimiter === "=") ? rightOfColon(str.split("=", 1)[0]) : str.split(":", 1)[0]
-      ).trim().replaceAll(" ", "_"));
-      // If key exists in brain, use it as-is
-      // Otherwise strip common prefixes/suffixes models tend to add
-      return (raw in triggeredBrain) ? raw : (raw
-        .replace(/^th(?:oughts?|ink(?:ing))_(?:(?:o[nfr]|a(?:bout|nd)|with|for)_)?/, "")
-        .replace(/(?:_(?:and|or))?_th(?:oughts?|ink(?:ing))$/, "")
-      );
-    })();
-    if ((key === "") || ((
-      (60 < key.length)
-      || ["thought", "thoughts", "think", "thinking", "any_name", "example_name"].includes(key)
-      || ["any_key", "key_name", "example_key"].some(s => key.includes(s))
-    ) && !(key in triggeredBrain))) {
-      // Skip invalid or placeholder keys copied from the task prompts
+    // Left of the delimiter: a bare number means "revise that memory"; anything else means "new memory"
+    const lhsDigits = /^\D*(\d+)\D*$/.exec(str.split(delimiter, 1)[0].trim());
+    const reviseKey = lhsDigits ? lhsDigits[1] : "";
+    // Right of the delimiter: the memory text itself
+    const memory = cleanMemory(str.slice(str.indexOf(delimiter) + delimiter.length));
+    if (!/[a-z0-9A-Z]/.test(memory) || /[\u4e00-\u9fff]/.test(memory) || !memory.includes(" ") || isPlaceholderMemory(memory)) {
+      // Empty, non-latin, too short, or a parroted placeholder, skip
       continue;
     }
-    // ==================== VALUE EXTRACTION ====================
-    // Extract and clean the value
-    const value = (
-      (str.split(delimiter, 2)[1] || "")
-        // Strip leading/trailing quotes and whitespace
-        .replace(/^[\s"'`«»„“”「」´‘’‟‚‛]+|[\s"'`«»„“”「」´‘’‟‚‛]+$/g, "")
-        .replace(/\s+/g, " ")
-    );
-    if (!/[a-z0-9A-Z]/.test(value) || /[\u4e00-\u9fff]/.test(value)) {
-      // Skip empty or non-latin values because DeepSeek is dumb
-      continue;
-    } else if (!value.includes(" ")) {
-      // ==================== RENAME OPERATION ====================
-      // No spaces = might be a key rename
-      if (agent === null) {
-        continue;
-      }
-      if (getAltered(agent).has(key)) {
-        continue;
-      }
-      const oldKey = formatKey(value);
-      if (!getAltered(agent).has(oldKey) && (oldKey in agent.brain)) {
-        // Valid rename: move thought from old key to new key
-        // Queue a rename operation
-        operations.push(() => {
-          agent.brain[key] = agent.brain[oldKey];
-          delete agent.brain[oldKey];
-          const p = pathForAgent(agent);
-          return {
-            agent,
-            log: `${p}.${key} = ${p}.${oldKey};\n${logDelete(agent, oldKey)}`
-          };
-        });
-        getAltered(agent).add(key);
-        getAltered(agent).add(oldKey);
-      }
-      continue;
-    } else if (value.includes("_")) {
-      // Underscores in value = probably a malformed key, skip
-      continue;
-    }
-    // ==================== ASSIGN OPERATION ====================
-    // Extract the actual thought content
-    const thought = simplify(rightOfColon(value)
-      .replaceAll("→", " ")
-      .replaceAll("\\n", "\n")
-    ).trim().split("\n", 1)[0].trimEnd();
-    const targetAgent = resolveAgentFromKey(key);
+    // Revise targets the triggered agent's numbered memory; a new memory routes by its leading name
+    const isRevise = (reviseKey !== "") && (agent !== null) && (reviseKey in agent.brain);
+    const targetAgent = isRevise ? agent : resolveAgentFromMemory(memory);
     if (targetAgent === null) {
       continue;
     }
-    if (getAltered(targetAgent).has(key) || !thought.includes(" ")) {
-      // Skip if key already touched or thought too short
+    if (isRevise && getAltered(targetAgent).has(reviseKey)) {
       continue;
-    } else if (!(key in targetAgent.brain)) {
-      // Check for duplicate thought values (don't store the same thing twice)
-      const last = thought.length - 1;
-      // Potentially hot loop so avoid excessive get() calls
+    }
+    const dupToken = `${targetAgent.name}\u0000${memory}`;
+    if (!isRevise && queuedNew.has(dupToken)) {
+      continue;
+    }
+    // Deduplicate: skip if this memory is already contained within an existing memory
+    {
+      const last = memory.length - 1;
       const brain = targetAgent.brain;
-      for (const key in brain) {
-        const existing = brain[key];
-        if (
-          // This shouldn't be possible but whatevs
-          (typeof existing === "string")
-          // Short-circuit on impossible relative lengths for speed
-          && (last < existing.length)
-          // Fast check inclusion
-          && (existing.indexOf(thought) !== -1)
-        ) {
-          // This thought already exists within some thought associated with another key
+      for (const existingKey in brain) {
+        if (isRevise && (existingKey === reviseKey)) {
+          continue;
+        }
+        const existing = brain[existingKey];
+        if ((typeof existing === "string") && (last < existing.length) && existing.includes(memory)) {
+          // This memory already exists within another stored memory
           continue interpreter;
         }
       }
     }
-    // Queue an assign operation
+    // Queue the write/revise operation
     operations.push(() => {
-      // Increment the global label counter
-      IS.label++;
-      // Encode the label as zero-width chars for context tracking
-      IS.encoding = `${(IS.encoding === "") ? "\u200B" : IS.encoding}${(() => {
-        let n = IS.label;
-        let out = "";
-        // Convert label to binary using ZWNJ (0) and ZWJ (1)
-        while (0 < n) {
-          out = `${(n & 1) ? "\u200D" : "\u200C"}${out}`;
-          n >>>= 1;
-        }
-        return out || "\u200C";
-      })()}\u200B`;
-      // Inject the encoding into the output text
-      text = (text
-        .replace(/[\u200B-\u200D]+/g, "")
-        .replace(/^\s*/, leadingWhitespace => `${leadingWhitespace}${IS.encoding}`)
-      );
-      // One common complaint from playtesters was that models were storing repeated thoughts
-      // Upon further investigation, I discovered this was actually miscommunication on my part
-      // Players assumed the operation log (card entry) was a reflection of the brain (card notes)
-      // Thus players (reasonably) misinterpreted label updates as repetition
-      // Solution: Log distinct relabel syntax to improve non-verbal communication
-      const target = `${pathForAgent(targetAgent)}.${key}`;
-      const old = targetAgent.brain[key];
-      targetAgent.brain[key] = `${IS.label} → ${thought}`;
-      // Determine if this is a relabel of the same thought value
-      const relabel = (
-        (typeof old === "string")
-        && (thought === old.slice(old.indexOf("→") + 1).trim())
-      );
+      const newKey = armMemoryLabel();
+      if (isRevise && (reviseKey in targetAgent.brain)) {
+        // Revise: drop the old label so the improved memory bubbles up to newest
+        delete targetAgent.brain[reviseKey];
+        targetAgent.brain[newKey] = memory;
+        return {
+          agent: targetAgent,
+          log: `${brainRef(targetAgent, newKey)} = ${JSON.stringify(memory)}; // revised ${brainRef(targetAgent, reviseKey)}\n${logDelete(targetAgent, reviseKey)}`
+        };
+      }
+      targetAgent.brain[newKey] = memory;
       return {
         agent: targetAgent,
-        log: `${(
-          relabel ? `old = ${target};\n` : ""
-        )}${target} = ${(
-          relabel ? `[${IS.label}, old${(
-            old.includes("→") ? "\n  .slice(old.indexOf(\"→\") + 1)\n  .trim()\n" : ".trim()"
-          )}].join(" → ")` : JSON.stringify(targetAgent.brain[key])
-        )};`
+        log: `${brainRef(targetAgent, newKey)} = ${JSON.stringify(memory)};`
       };
     });
-    getAltered(targetAgent).add(key);
+    if (isRevise) {
+      getAltered(targetAgent).add(reviseKey);
+    } else {
+      queuedNew.add(dupToken);
+    }
   }
   // ==================== OUTPUT TEXT SANITIZATION ====================
   // Clean up the model's output text before finalizing
@@ -2918,8 +2585,8 @@ I hope you will have lots of fun!
   if (operations.length === 0) {
     // No operations to execute, we're done
     if (agent !== null && blocks.length === 0) {
-      log("IS", "output model ignored thought format for", agent.name,
-        "| expected: (thought_key = `...`) then story",
+      log("IS", "output model ignored memory format for", agent.name,
+        "| expected: (remember = `...`) then story",
         "| hasAnyBracket:", /[(\[{]/.test(text),
         "| sample:", text.slice(0, 450));
     }
@@ -2966,23 +2633,8 @@ I hope you will have lots of fun!
       log("IS", "brain notes cleared (empty) for", opAgent.name);
       return;
     }
-    let serialized = "";
-    const appendPair = config.json ? ((
-      serialized = `"${keys[0]}": ${JSON.stringify(brain[keys[0]])}`
-    ), (key = "") => {
-      serialized += `,\n\n"${key}": ${JSON.stringify(brain[key])}`;
-      return;
-    }) : ((
-      serialized = `${keys[0]}: ${brain[keys[0]]}`
-    ), (key = "") => {
-      serialized += `\n\n${key}: ${brain[key]}`;
-      return;
-    });
-    for (let i = 1; i < keys.length; i++) {
-      appendPair(keys[i]);
-    }
-    opAgent.card.description = serialized;
-    log("IS", "brain updated:", opAgent.name, "| thought keys:", keys.length, "|", keys.slice(0, 5).join(", ") + (5 < keys.length ? "…" : ""));
+    opAgent.card.description = serializeBrain(brain, config.json);
+    log("IS", "brain updated:", opAgent.name, "| memories:", keys.length, "|", keys.slice(0, 5).join(", ") + (5 < keys.length ? "…" : ""));
   };
   /**
    * Trims an agent operation log to AID's soft entry limit
@@ -3011,7 +2663,6 @@ I hope you will have lots of fun!
     serializeAgentBrain(opAgent);
   }
   disarmISThoughtFrontMemory();
-  return;
 }
 
 //—————————————————————————————————————————————————————————————————————————————————————
@@ -4082,7 +3733,6 @@ function AutoCards(inHook, inText, inStop) {
             function assignBannedTitles(titles) {
               Internal.setBannedTitles(uniqueTitlesArray(titles), false);
               AC.signal.overrideBans = 3;
-              return;
             }
             return codomain;
           },
@@ -4482,7 +4132,6 @@ function AutoCards(inHook, inText, inStop) {
             );
             AC.message.pending = [];
             concludeLSI(guideCard, stateCard, logCard);
-            return;
           }
           break;
         }
@@ -4514,7 +4163,6 @@ function AutoCards(inHook, inText, inStop) {
               CODOMAIN.initialize(newText);
             }
             concludeLSI(guideCard, stateCard, logCard);
-            return;
           }
           break;
         }
@@ -4536,7 +4184,6 @@ function AutoCards(inHook, inText, inStop) {
       function callbackLog(logCard) {
         return function (...args) {
           logToCard(logCard, ...args);
-          return;
         }
       }
       function handleError(logCard, error) {
@@ -4550,7 +4197,7 @@ function AutoCards(inHook, inText, inStop) {
         if (error.message) {
           AC.signal.upstreamError += ":\n";
           if (error.stack) {
-            const stackMatch = error.stack.match(/AutoCards[\s\S]*?:\s*(\d+)\s*:\s*(\d+)/i);
+            const stackMatch = /AutoCards[\s\S]*?:\s*(\d+)\s*:\s*(\d+)/i.exec(error.stack);
             if (stackMatch) {
               AC.signal.upstreamError += (
                 (error.name ?? "Error") + ": " + error.message + "\n" +
@@ -4570,7 +4217,6 @@ function AutoCards(inHook, inText, inStop) {
         } else {
           state.message = AC.signal.upstreamError;
         }
-        return;
       }
       function hadError() {
         return (AC.signal.upstreamError !== "");
@@ -4588,7 +4234,6 @@ function AutoCards(inHook, inText, inStop) {
         const simpleState = { ...state };
         delete simpleState.LSIv2;
         stateCard.description = limitString(stringifyObject(simpleState).trim(), 999999).trimEnd();
-        return;
       }
     } else {
       const cardsets = collectAll();
@@ -4633,7 +4278,6 @@ function AutoCards(inHook, inText, inStop) {
           target[key] = source[key];
         }
       }
-      return;
     }
     function collectAll() {
       return collectCards(...Object.keys(factories).map(key => templates[key]));
@@ -4676,9 +4320,9 @@ function AutoCards(inHook, inText, inStop) {
             break;
           }
           const [extensionA, extensionB] = [card.title, card.keys].map(name => {
-            const extensionMatch = name.replace(/[^a-zA-Z0-9]/g, "").match(/\d+$/);
+            const extensionMatch = /\d+$/.exec(name.replace(/[^a-zA-Z0-9]/g, ""));
             if (extensionMatch) {
-              return parseInt(extensionMatch[0], 10);
+              return Number.parseInt(extensionMatch[0], 10);
             } else {
               return -1;
             }
@@ -4705,7 +4349,6 @@ function AutoCards(inHook, inText, inStop) {
               card.title = card.keys = collection.template.title;
               collection.excess.push(card);
             }
-            return;
           }
           function setPrimary() {
             card.title = card.keys = collection.template.title;
@@ -4714,7 +4357,6 @@ function AutoCards(inHook, inText, inStop) {
             } else {
               collection.excess.push(card);
             }
-            return;
           }
           break;
         }
@@ -4772,7 +4414,6 @@ function AutoCards(inHook, inText, inStop) {
         }
         function applyComment(card) {
           card.entry = card.description = "// You may continue writing your code here";
-          return;
         }
         function constructPrimary() {
           collection.primary = constructCard(collection.template, newCardIndex());
@@ -4791,14 +4432,12 @@ function AutoCards(inHook, inText, inStop) {
             card.title = card.keys;
           }
           storyCards.splice(newCardIndex(), 0, ...fullCardset);
-          return;
         }
       }
       function addAuxiliary(card, collection, extension) {
         collection.occupied.add(extension);
         card.title = card.keys = collection.template.title + " " + extension;
         collection.auxiliaries.push({ card, extension });
-        return;
       }
       return O.f(collections.map(({ singleton, primary, auxiliaries }) => {
         if (singleton) {
@@ -4888,7 +4527,6 @@ function AutoCards(inHook, inText, inStop) {
           function overrideBans() {
             Internal.setBannedTitles(AC.database.titles.pendingBans.map(pair => pair[0]), true);
             AC.signal.overrideBans = 0;
-            return;
           }
         }
         if (configureCard.entry !== configureCardTemplate.entry) {
@@ -5233,8 +4871,7 @@ function AutoCards(inHook, inText, inStop) {
               const titles = [];
               const incompleteTitle = [];
               let previousWordTerminates = true;
-              for (let i = 0; i < words.length; i++) {
-                let word = words[i];
+              for (let word of words) {
                 if (startsWithTerminator()) {
                   // This word begins on a terminator, push the preexisting incomplete title to titles and proceed with the next sentence's beginning
                   pushTitle();
@@ -5277,7 +4914,7 @@ function AutoCards(inHook, inText, inStop) {
                   if (0 < incompleteTitle.length) {
                     // Titles cannot start with a minor word
                     if (
-                      (2 < incompleteTitle.length) && !(isMinorWord(incompleteTitle[incompleteTitle.length - 1]) && isMinorWord(incompleteTitle[incompleteTitle.length - 2]))
+                      (2 < incompleteTitle.length) && !(isMinorWord(incompleteTitle.at(-1)) && isMinorWord(incompleteTitle.at(-2)))
                     ) {
                       // Titles cannot have 3 or more consecutive minor words in a row
                       pushTitle();
@@ -5310,7 +4947,6 @@ function AutoCards(inHook, inText, inStop) {
                     // Empty the array
                     incompleteTitle.length = 0;
                   }
-                  return;
                 }
                 function isMinorWord(testWord) {
                   return Words.minor.includes(testWord.toLowerCase());
@@ -5436,7 +5072,7 @@ function AutoCards(inHook, inText, inStop) {
         const cardEvents = (function () {
           // Extract memories from the initial text (not TEXT as called from within the context modifier!)
           const contextMemories = (function () {
-            const memoriesMatch = text.match(/Memories\s*:\s*([\s\S]*?)\s*(?:Recent\s*Story\s*:|$)/i);
+            const memoriesMatch = /Memories\s*:\s*([\s\S]*?)\s*(?:Recent\s*Story\s*:|$)/i.exec(text);
             if (!memoriesMatch) {
               return new Set();
             }
@@ -5539,7 +5175,7 @@ function AutoCards(inHook, inText, inStop) {
           } else if (!card.entry.startsWith("{title: ")) {
             continue;
           } else if (exceedsMemoryLimit()) {
-            const titleHeaderMatch = card.entry.match(titleHeaderMatcher);
+            const titleHeaderMatch = titleHeaderMatcher.exec(card.entry);
             if (titleHeaderMatch && isAuto(titleHeaderMatch[1])) {
               prepareMemoryCompression(titleHeaderMatch[1].toLowerCase());
               break;
@@ -5566,17 +5202,17 @@ function AutoCards(inHook, inText, inStop) {
                 }
               })();
               const oldMemories = isolateMemories(extractCardMemories().text);
-              for (let i = 0; i < cardEvent.pendingMemories.length; i++) {
-                if (associationsHashed.has(cardEvent.pendingMemories[i])) {
+              for (const pendingMemory of cardEvent.pendingMemories) {
+                if (associationsHashed.has(pendingMemory)) {
                   // Remove first to alter the insertion order
-                  associationsHashed.remove(cardEvent.pendingMemories[i]);
+                  associationsHashed.remove(pendingMemory);
                 } else if (!oldMemories.some(oldMemory => (
-                  (0.8 < similarityScore(oldMemory, cardEvent.pendingMemories[i]))
+                  (0.8 < similarityScore(oldMemory, pendingMemory))
                 ))) {
                   // Ensure no near-duplicate memories are appended
-                  card.description += "\n- " + cardEvent.pendingMemories[i];
+                  card.description += "\n- " + pendingMemory;
                 }
-                associationsHashed.add(cardEvent.pendingMemories[i]);
+                associationsHashed.add(pendingMemory);
               }
               AC.database.memories.associations[titleKey][1] = associationsHashed.latest(3500).serialize();
               if (associationsHashed.size() === 0) {
@@ -5619,7 +5255,7 @@ function AutoCards(inHook, inText, inStop) {
             continue;
           }
           // Simplify auto-card titles which contain an obvious surname
-          const titleHeaderMatch = card.entry.match(titleHeaderMatcher);
+          const titleHeaderMatch = titleHeaderMatcher.exec(card.entry);
           if (!titleHeaderMatch) {
             continue;
           }
@@ -5660,9 +5296,9 @@ function AutoCards(inHook, inText, inStop) {
           Internal.getUsedTitles();
           function exceedsMemoryLimit() {
             return ((function () {
-              const memoryLimitMatch = card.description.match(/limits?\s*:\s*(\d+)\s*}/i);
+              const memoryLimitMatch = /limits?\s*:\s*(\d+)\s*}/i.exec(card.description);
               if (memoryLimitMatch) {
-                return validateMemoryLimit(parseInt(memoryLimitMatch[1], 10));
+                return validateMemoryLimit(Number.parseInt(memoryLimitMatch[1], 10));
               } else {
                 return AC.config.defaultMemoryLimit;
               }
@@ -5696,9 +5332,7 @@ function AutoCards(inHook, inText, inStop) {
             return true;
           }
           function extractCardMemories() {
-            const memoryHeaderMatch = card.description.match(
-              /(?<={\s*updates?\s*:[\s\S]*?,\s*limits?\s*:[\s\S]*?})[\s\S]*$/i
-            );
+            const memoryHeaderMatch = /(?<={\s*updates?\s*:[\s\S]*?,\s*limits?\s*:[\s\S]*?})[\s\S]*$/i.exec(card.description);
             if (memoryHeaderMatch) {
               return O.f({ missing: false, text: cleanSpaces(memoryHeaderMatch[0].trim()) });
             } else {
@@ -5799,7 +5433,7 @@ function AutoCards(inHook, inText, inStop) {
         if (shouldTrimContext()) {
           // Truncate context based on AC.signal.maxChars, begin by individually removing the oldest sentences from the recent story portion of the context window
           const recentStoryPattern = /Recent\s*Story\s*:\s*([\s\S]*?)(%@GEN@%|%@COM@%|\s\[\s*Author's\s*note\s*:|$)/i;
-          const recentStoryMatch = context.match(recentStoryPattern);
+          const recentStoryMatch = recentStoryPattern.exec(context);
           if (recentStoryMatch) {
             const recentStory = recentStoryMatch[1];
             let sentencesJoined = recentStory;
@@ -5829,7 +5463,7 @@ function AutoCards(inHook, inText, inStop) {
             // Next remove loaded card memories (if any) with top-down priority, one card at a time
             do {
               // This matcher relies on its case-sensitivity
-              const cardMemoriesMatch = context.match(/{%@MEM@%([\s\S]+?)%@MEM@%}/);
+              const cardMemoriesMatch = /{%@MEM@%([\s\S]+?)%@MEM@%}/.exec(context);
               if (!cardMemoriesMatch) {
                 break;
               }
@@ -5940,7 +5574,6 @@ function AutoCards(inHook, inText, inStop) {
             }
           })() + "\n\n";
           isCompressing = true;
-          return;
         }
         function promptGeneration() {
           repositionAN();
@@ -5959,16 +5592,15 @@ function AutoCards(inHook, inText, inStop) {
             }
           })();
           isGenerating = true;
-          return;
         }
         function repositionAN() {
           // Move the Author's Note further back in context during card generation (should still be considered)
           const authorsNotePattern = /\s*(\[\s*Author's\s*note\s*:[\s\S]*\])\s*/i;
-          const authorsNoteMatch = context.match(authorsNotePattern);
+          const authorsNoteMatch = authorsNotePattern.exec(context);
           if (!authorsNoteMatch) {
             return;
           }
-          const leadingSpaces = context.match(/^\s*/)[0];
+          const leadingSpaces = /^\s*/.exec(context)[0];
           context = context.replace(authorsNotePattern, " ").trimStart();
           const recentStoryPattern = /\s*Recent\s*Story\s*:\s*/i;
           if (recentStoryPattern.test(context)) {
@@ -5981,7 +5613,6 @@ function AutoCards(inHook, inText, inStop) {
             context = authorsNoteMatch[1] + "\n\n" + context;
           }
           context = leadingSpaces + context;
-          return;
         }
         function sortCandidates() {
           if (AC.database.titles.candidates.length < 2) {
@@ -6004,7 +5635,6 @@ function AutoCards(inHook, inText, inStop) {
               ), recencyExponent);
             }, 0);
           }
-          return;
         }
         function shouldTrimContext() {
           return (AC.signal.maxChars <= context.length);
@@ -6013,7 +5643,6 @@ function AutoCards(inHook, inText, inStop) {
           // candidate: ["Example Title", 0, 1, 2, 3]
           minTurn = boundInteger(0, minTurn, candidate[1]);
           maxTurn = boundInteger(candidate[candidate.length - 1], maxTurn);
-          return;
         }
         function disableAutoCards() {
           AC.signal.forceToggle = null;
@@ -6027,7 +5656,6 @@ function AutoCards(inHook, inText, inStop) {
           // Post a success message
           notify("Disabled! Use the \"Edit to enable Auto-Cards\" story card to undo");
           CODOMAIN.initialize(TEXT);
-          return;
         }
         break;
       }
@@ -6256,9 +5884,7 @@ function AutoCards(inHook, inText, inStop) {
                 "Failed to apply summarized memories for \"" + AC.compression.vanityTitle + "\" due to a missing or invalid AC card title header!"
               );
             } else {
-              const memoryHeaderMatch = card.description.match(
-                /(?<={\s*updates?\s*:[\s\S]*?,\s*limits?\s*:[\s\S]*?})[\s\S]*$/i
-              );
+              const memoryHeaderMatch = /(?<={\s*updates?\s*:[\s\S]*?,\s*limits?\s*:[\s\S]*?})[\s\S]*$/i.exec(card.description);
               if (memoryHeaderMatch) {
                 // Update the card memory bank
                 notify("Memories for \"" + AC.compression.vanityTitle + "\" were successfully summarized!");
@@ -6294,7 +5920,6 @@ function AutoCards(inHook, inText, inStop) {
               getPrecedingNewlines() + ">>> please select \"continue\" (" + Math.round(ratio * 100) + "%) <<<\n\n"
             );
           }
-          return;
         }
         break;
       }
@@ -6497,7 +6122,6 @@ function AutoCards(inHook, inText, inStop) {
           AC.signal.swapControlCards = true;
           // Post a success message
           notify("Enabled! You may now edit the \"Configure Auto-Cards\" story card");
-          return;
         }
         break;
       }
@@ -6543,7 +6167,6 @@ function AutoCards(inHook, inText, inStop) {
           Const.#throwError([[(args.length === 1), "Const cannot be instantiated with a parameter"], ["Const cannot be instantiated with parameters"]]);
         } else {
           O.f(this);
-          return this;
         }
       }
       declare(...args) {
@@ -6980,7 +6603,6 @@ function AutoCards(inHook, inText, inStop) {
       constructor(size = StringsHashed.#defaultSize) {
         this.#size = size;
         this.#store = new Set();
-        return this;
       }
       static deserialize(serialized, size = StringsHashed.#defaultSize) {
         const stringsHashed = new StringsHashed(size);
@@ -7091,7 +6713,7 @@ function AutoCards(inHook, inText, inStop) {
                 return AC.config.defaultCardsDoMemoryUpdates;
               }
             })() + ", limit: " + validateMemoryLimit(
-              parseInt((request.memoryLimit || AC.config.defaultMemoryLimit), 10)
+              Number.parseInt((request.memoryLimit || AC.config.defaultMemoryLimit), 10)
             ) + "}" + (function () {
               const cardMemoryBank = cleanSpaces((request.memoryStart ?? "").toString().trim());
               if (cardMemoryBank === "") {
@@ -7113,7 +6735,7 @@ function AutoCards(inHook, inText, inStop) {
                 const terminalEntryPlaceholderPattern = /(?:[%\$]+\s*|[%\$]*){+\s*entry\s*}+$/i;
                 if (terminalEntryPlaceholderPattern.test(prompt)) {
                   prompt = prompt.replace(terminalEntryPlaceholderPattern, "");
-                  const trailingSpaces = prompt.match(/(\s+)$/);
+                  const trailingSpaces = /(\s+)$/.exec(prompt);
                   if (trailingSpaces) {
                     prompt = prompt.trimEnd();
                     return trailingSpaces[1];
@@ -7161,12 +6783,11 @@ function AutoCards(inHook, inText, inStop) {
                 if (!promptDetails.endsWith(rightSymbol)) {
                   promptDetails += rightSymbol;
                 }
-                return;
               }
             }
             return limitString(prompt, Math.floor(0.8 * AC.signal.maxChars));
           })(),
-          limit: validateEntryLimit(parseInt((request.entryLimit || AC.config.defaultEntryLimit), 10))
+          limit: validateEntryLimit(Number.parseInt((request.entryLimit || AC.config.defaultEntryLimit), 10))
         }));
         notify("Generating card for \"" + title + "\"");
         function addBullet(str) {
@@ -7185,7 +6806,7 @@ function AutoCards(inHook, inText, inStop) {
         O.f(request);
         Internal.getUsedTitles(true);
         if (!Internal.generateCard(request) && !Internal.generateCard(request, [
-          (oldCard.entry.match(/^{title: ([\s\S]*?)}/)?.[1] || request.title.replace(/\w\S*/g, word => (
+          (/^{title: ([\s\S]*?)}/.exec(oldCard.entry)?.[1] || request.title.replace(/\w\S*/g, word => (
             word[0].toUpperCase() + word.slice(1).toLowerCase()
           ))), oldCard.keys
         ])) {
@@ -7303,7 +6924,7 @@ function AutoCards(inHook, inText, inStop) {
               )) {
                 return false;
               }
-              const badTitleHeaderMatch = str.match(/{([\s\S]*?)}/);
+              const badTitleHeaderMatch = /{([\s\S]*?)}/.exec(str);
               if (!badTitleHeaderMatch) {
                 return false;
               }
@@ -7505,7 +7126,7 @@ function AutoCards(inHook, inText, inStop) {
               if ((limitText === "")) {
                 return -1;
               } else {
-                return parseInt(limitText, 10);
+                return Number.parseInt(limitText, 10);
               }
             }
             return limit.toString();
@@ -7533,7 +7154,6 @@ function AutoCards(inHook, inText, inStop) {
             card.entry = removeAutoProps(card.entry);
             const [notes, memories] = isolateNotesAndMemories(card.description);
             card.description = notes + "%@%" + removeAutoProps(memories);
-            return;
           }
           function rejoinDescription(notes, memoryProperties, memories) {
             card.description = limitString((notes + (function () {
@@ -7551,10 +7171,9 @@ function AutoCards(inHook, inText, inStop) {
                 return "\n";
               }
             })() + memories), 10000);
-            return;
           }
           function isolateProperty(sourceText, propMatcher, propCleaner) {
-            return ((sourceText.match(propMatcher)?.[0] || "")
+            return ((propMatcher.exec(sourceText)?.[0] || "")
               .replace(propCleaner, "")
               .split(",")[0]
               .trim()
@@ -7580,7 +7199,6 @@ function AutoCards(inHook, inText, inStop) {
                 seen.add(literalTitles[i]);
               }
             }
-            return;
           }
           function denumberName(name) {
             if (2 < (name.match(/[^\d\s]/g) || []).length) {
@@ -7896,7 +7514,6 @@ function AutoCards(inHook, inText, inStop) {
           excessCards.push(singletonCard);
           singletonCard = card;
         }
-        return;
       }
     }
     if (singletonCard === null) {
@@ -8036,7 +7653,7 @@ function AutoCards(inHook, inText, inStop) {
           ), true));
           let count = 0;
           for (const card of redo) {
-            const titleMatch = card.entry.match(titleMatchPattern);
+            const titleMatch = titleMatchPattern.exec(card.entry);
             if (titleMatch && Internal.redoCard(O.f({ title: titleMatch[1] }), true, "")) {
               count++;
             }
@@ -8087,7 +7704,6 @@ function AutoCards(inHook, inText, inStop) {
             result += parsed + " -> \"" + request.title + "\" is invalid or unavailable";
             logEvent(parsed);
           }
-          return;
         }
       }
       if (isPendingGeneration() || isAwaitingGeneration() || isPendingCompression()) {
@@ -8129,14 +7745,12 @@ function AutoCards(inHook, inText, inStop) {
       AC.chronometer.step = (AC.chronometer.turn < currentTurn);
     }
     AC.chronometer.turn = currentTurn;
-    return;
   }
   function concludeEmergency() {
     promoteAmnesia();
     endTurn();
     AC.message.pending = [];
     AC.message.previous = getStateMessage();
-    return;
   }
   function concludeOutputBlock(templateCard) {
     if (AC.config.deleteAllAutoCards !== null) {
@@ -8188,7 +7802,6 @@ function AutoCards(inHook, inText, inStop) {
     if (AC.config.LSIv2 === null) {
       postMessages();
     }
-    return;
   }
   function endTurn() {
     AC.database.titles.used = [];
@@ -8208,9 +7821,7 @@ function AutoCards(inHook, inText, inStop) {
           pendingArray.splice(i, 1);
         }
       }
-      return;
     }
-    return;
   }
   // Example usage: notify("Message text goes here");
   function notify(message) {
@@ -8224,7 +7835,6 @@ function AutoCards(inHook, inText, inStop) {
     } else {
       notify(message.toString());
     }
-    return;
   }
   function logEvent(message, uncounted) {
     if (uncounted) {
@@ -8239,7 +7849,6 @@ function AutoCards(inHook, inText, inStop) {
         }
       })() + ": " + message.replace(/"/g, "'"));
     }
-    return;
   }
   // Provide the story card object which you wish to log info within as the first argument
   // All remaining arguments represent anything you wish to log
@@ -8273,14 +7882,14 @@ function AutoCards(inHook, inText, inStop) {
       if (pair) {
         return pair[1];
       } else {
-        return scopesTable[scopesTable.length - 1][1];
+        return scopesTable.at(-1)[1];
       }
     })();
     const hookDelimiterLeft = callingScope + " @ ";
     if (desc.startsWith(turnDelimiter + hookDelimiterLeft)) {
-      const hookDelimiterOld = desc.match(new RegExp((
+      const hookDelimiterOld = new RegExp((
         "^" + turnDelimiter + "(" + hookDelimiterLeft + "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z:\n)"
-      ).replaceAll("\n", "\\n")));
+      ).replaceAll("\n", "\\n")).exec(desc);
       if (hookDelimiterOld) {
         header += hookDelimiterOld[1];
       } else {
@@ -8304,9 +7913,9 @@ function AutoCards(inHook, inText, inStop) {
       let logDelimiter = "Log #";
       if (desc.startsWith(header + logDelimiter)) {
         desc = desc.replace(header, header + "———\n");
-        const logCounter = desc.match(/Log #(\d+)/);
+        const logCounter = /Log #(\d+)/.exec(desc);
         if (logCounter) {
-          logDelimiter += (parseInt(logCounter[1], 10) + 1).toString();
+          logDelimiter += (Number.parseInt(logCounter[1], 10) + 1).toString();
         }
       } else {
         logDelimiter += "0";
@@ -8324,7 +7933,6 @@ function AutoCards(inHook, inText, inStop) {
     function getNewHookDelimiter() {
       return hookDelimiterLeft + (new Date().toISOString()) + ":\n";
     }
-    return;
   }
   // Makes nested objects not look like cancer within interface cards
   function stringifyObject(obj) {
@@ -8379,7 +7987,6 @@ function AutoCards(inHook, inText, inStop) {
       AC.message.pending = [];
     }
     AC.message.previous = getStateMessage();
-    return;
   }
   function getStateMessage() {
     return state.message ?? "";
@@ -8436,7 +8043,6 @@ function AutoCards(inHook, inText, inStop) {
     AC.generation.cooldown = validateCooldown(underQuarterInteger(AC.config.addCardCooldown));
     forgetStuff();
     AC.chronometer.amnesia = 0;
-    return;
   }
   function forgetStuff() {
     AC.generation.completed = 0;
@@ -8444,7 +8050,6 @@ function AutoCards(inHook, inText, inStop) {
     AC.generation.workpiece = O.f({});
     // AC.generation.pending is not forgotten
     resetCompressionProperties();
-    return;
   }
   function resetCompressionProperties() {
     AC.compression.completed = 0;
@@ -8454,7 +8059,6 @@ function AutoCards(inHook, inText, inStop) {
     AC.compression.lastConstructIndex = -1;
     AC.compression.oldMemoryBank = [];
     AC.compression.newMemoryBank = [];
-    return;
   }
   function underQuarterInteger(someNumber) {
     return Math.floor(someNumber / 4);
@@ -8493,7 +8097,7 @@ function AutoCards(inHook, inText, inStop) {
       } else if (/^\d+$/.test(settingKeyValue[1])) {
         // This setting line's value is an integer
         // Negative integers are parsed as being positive (because "-" characters were removed)
-        settings[settingKeyValue[0]] = parseInt(settingKeyValue[1], 10);
+        settings[settingKeyValue[0]] = Number.parseInt(settingKeyValue[1], 10);
       }
     }
     // Return the settings object for later analysis
@@ -8518,13 +8122,12 @@ function AutoCards(inHook, inText, inStop) {
     function readDate(card) {
       if (card && card.updatedAt) {
         const timestamp = Date.parse(card.updatedAt);
-        if (!isNaN(timestamp)) {
+        if (!Number.isNaN(timestamp)) {
           return timestamp;
         }
       }
       return 0;
     }
-    return;
   }
   function see(arr) {
     return String.fromCharCode(...arr.map(n => Math.sqrt(n / 33)));
@@ -8721,8 +8324,8 @@ function AutoCards(inHook, inText, inStop) {
     function isUsed(lowerTitle) {
       if (used.size === 0) {
         const usedTitles = Internal.getUsedTitles();
-        for (let i = 0; i < usedTitles.length; i++) {
-          used.add(usedTitles[i].toLowerCase());
+        for (const usedTitle of usedTitles) {
+          used.add(usedTitle.toLowerCase());
         }
         if (used.size === 0) {
           // Add a placeholder so compute isn't wasted on additional checks during this hook
@@ -8757,8 +8360,8 @@ function AutoCards(inHook, inText, inStop) {
           return [];
         }
       })()];
-      for (let i = 0; i < bansToAdd.length; i++) {
-        bans.add(bansToAdd[i]);
+      for (const banToAdd of bansToAdd) {
+        bans.add(banToAdd);
       }
     }
     return bans.has(lowerTitle);
@@ -8768,8 +8371,8 @@ function AutoCards(inHook, inText, inStop) {
     const minorWords = new Set(Words.minor);
     if ((forenames.size === 0) || (surnames.size === 0)) {
       const usedTitles = Internal.getUsedTitles();
-      for (let i = 0; i < usedTitles.length; i++) {
-        const usedTitleWords = divideTitle(usedTitles[i]);
+      for (const usedTitle of usedTitles) {
+        const usedTitleWords = divideTitle(usedTitle);
         if (
           (usedTitleWords.length === 2)
           && (2 < usedTitleWords[0].length)
@@ -8855,7 +8458,6 @@ function AutoCards(inHook, inText, inStop) {
   function clearTransientTitles() {
     AC.database.titles.used = [];
     [used, forenames, surnames].forEach(nameset => nameset.clear());
-    return;
   }
   function banTitle(title, isFinalAssignment) {
     title = limitString(title.replace(/\s+/g, " ").trim(), 100);
@@ -8874,7 +8476,6 @@ function AutoCards(inHook, inText, inStop) {
         AC.database.titles.pendingUnbans.splice(index, 1);
       }
     }
-    return;
   }
   function unbanTitle(title) {
     title = title.replace(/\s+/g, " ").trim();
@@ -8891,7 +8492,6 @@ function AutoCards(inHook, inText, inStop) {
         AC.database.titles.pendingBans.splice(index, 1);
       }
     }
-    return;
   }
   function lowArr(arr) {
     return arr.map(str => str.toLowerCase());
@@ -9033,7 +8633,6 @@ function AutoCards(inHook, inText, inStop) {
         storyCards.splice(index, 1);
         storyCards.push(data);
       }
-      return;
     }
   }
   // This is the only return point within the parent scope of AutoCards
@@ -9159,12 +8758,20 @@ function helpCommandInput_SAE(text) {
     - Blank entry/notes is normal until the first successful "brain op"
     - Console (Scripting): filter for "IS" to see trigger + thought plan + saves
 
+    Memories are a numbered list of self-contained third-person statements (Notes section):
+    - Write a new memory: (remember = \`Leo realized Mara had been lying to him for weeks.\`)
+    - Revise memory 2140:  (2140 = \`Leo now trusts Mara again after she explained herself.\`)
+    - Merge memories:      (merge 2140, 2141 = \`Leo and Mara reconciled after their fight over the map.\`)
+    - Delete memory 2141:  (delete 2141)
+    - A numberless line in Notes is a permanent "core" memory that is never auto-trimmed
+
     Common IS console lines:
     - "context agent triggered: Leo" — name found in recent story
-    - "context thought plan: … new-thought task injected" — AI asked to form a thought
-    - "context thought plan: … skipped (chance roll)" — no task this turn (raise Thought formation chance in config)
+    - "context memory plan: … new-memory task injected" — AI asked to form a memory
+    - "context memory plan: … merge-task (memory full)" — brain over budget, AI asked to consolidate
+    - "context memory plan: … skipped (chance roll)" — no task this turn (raise Thought formation chance in config)
     - "output saving N brain op(s)" — card entry/notes should update
-    - "output no brain ops saved" — model did not return a valid (thought) block
+    - "output no brain ops saved" — model did not return a valid (memory) block
     - "context skip — SAE arc generation active" — Inner Self paused during Story Arc Engine
 
     In-game (Configure Inner Self card):
@@ -9172,7 +8779,7 @@ function helpCommandInput_SAE(text) {
     - NPC first names in card NOTES (one per line)
     - Enable debug mode: true — shows task blocks in story text
     - Show detailed guide: true — prints full guide once on Continue
-    - Thought formation chance: default 60% (lower = fewer thought attempts)
+    - Thought formation chance: default 60% (lower = fewer memory attempts)
 
   Also: /help sae for Story Arc Engine commands
     >>
@@ -9287,7 +8894,7 @@ function getArcPromptText() {
 }
 
 function parseArcPromptFromSettingsEntry(entry) {
-  const match = entry.match(/arcPrompt\s*=\s*([\s\S]+)/i);
+  const match = /arcPrompt\s*=\s*([\s\S]+)/i.exec(entry);
   if (!match) {
     return null;
   }
@@ -9459,7 +9066,7 @@ function retrieveSettingsFromSC() {
   const settingsSC = storyCards.find(sc => sc.title === "Story Arc Settings");
 
   // Extract stop_SAE
-  const stopSAEMatch = settingsSC.entry.match(/stop_SAE\s*=\s*([A-Za-z]+)/);
+  const stopSAEMatch = /stop_SAE\s*=\s*([A-Za-z]+)/.exec(settingsSC.entry);
   if (stopSAEMatch == null) {
   }
   else if (stopSAEMatch[1].toLowerCase() == "true") {
@@ -9471,34 +9078,34 @@ function retrieveSettingsFromSC() {
   log("state.stop_SAE: " + state.stop_SAE)
 
   // Extract turnsPerAICall
-  const turnsMatch = settingsSC.entry.match(/turnsPerAICall\s*=\s*(\d+)/);
+  const turnsMatch = /turnsPerAICall\s*=\s*(\d+)/.exec(settingsSC.entry);
   if (turnsMatch) {
     state.turnsPerAICall = Number(turnsMatch[1]) ?? state.turnsPerAICall;
   }
 
   // Extract attemptLimit
-  const limitMatch = settingsSC.entry.match(/attemptLimit\s*=\s*(\d+)/);
+  const limitMatch = /attemptLimit\s*=\s*(\d+)/.exec(settingsSC.entry);
   if (limitMatch) {
     state.attemptLimit = Number(limitMatch[1]) ?? state.attemptLimit;
   }
 
   // Extract turnsPerElemRemoval
-  const removalMatch = settingsSC.entry.match(/turnsPerElemRemoval\s*=\s*(\d+)/);
+  const removalMatch = /turnsPerElemRemoval\s*=\s*(\d+)/.exec(settingsSC.entry);
   if (removalMatch) {
     state.turnsPerElemRemoval = Number(removalMatch[1]) ?? state.turnsPerElemRemoval;
   }
 
-  const depletedMatch = settingsSC.entry.match(/refreshArcWhenDepleted\s*=\s*([A-Za-z]+)/);
+  const depletedMatch = /refreshArcWhenDepleted\s*=\s*([A-Za-z]+)/.exec(settingsSC.entry);
   if (depletedMatch) {
     state.refreshArcWhenDepleted = depletedMatch[1].toLowerCase() === "true";
   }
 
-  const focusMatch = settingsSC.entry.match(/arcBeatFocus\s*=\s*(\w+)/i);
+  const focusMatch = /arcBeatFocus\s*=\s*(\w+)/i.exec(settingsSC.entry);
   if (focusMatch) {
     state.arcBeatFocus = normalizeArcBeatFocus(focusMatch[1]);
   }
 
-  const placementMatch = settingsSC.entry.match(/arcPlacement\s*=\s*(\w+)/i);
+  const placementMatch = /arcPlacement\s*=\s*(\w+)/i.exec(settingsSC.entry);
   if (placementMatch) {
     state.arcPlacement = normalizeArcPlacement(placementMatch[1]);
   }
@@ -9615,7 +9222,7 @@ function buildArcOnlyContext(fullText) {
   const memorySlice = (info?.memoryLength && fullText)
     ? fullText.slice(0, Math.min(info.memoryLength, 900))
     : "";
-  const authorInContext = (fullText.match(/\[Author's note:[\s\S]*?]/i) || [""])[0].slice(0, 500);
+  const authorInContext = (/\[Author's note:[\s\S]*?]/i.exec(fullText) || [""])[0].slice(0, 500);
 
   return [
     "=== STORY ARC ENGINE — PLANNING MODE (NOT STORY CONTINUATION) ===",
@@ -9758,7 +9365,7 @@ function saveStoryArc(text) {
 
       // Trim notes on char limit to prevent memory overfill
       if (arcSC.description.length > 3000) {
-        halfIndex = Math.floor(arcSC.description.length / 2);
+        const halfIndex = Math.floor(arcSC.description.length / 2);
         arcSC.description = arcSC.description.slice(0, halfIndex);
 
         console.log("Trimming arcSC description to prevent memory overload.");
@@ -9852,7 +9459,7 @@ function stripPriorArcContextBlocks(text) {
 
 function injectArcBeforeRecentStory(text, block) {
   text = stripPriorArcContextBlocks(text);
-  const recentMatch = text.match(/Recent Story:/i);
+  const recentMatch = /Recent Story:/i.exec(text);
   if (recentMatch) {
     const idx = text.indexOf(recentMatch[0]);
     return `${text.slice(0, idx)}\n\n${block}\n\n${text.slice(idx)}`;
@@ -9976,7 +9583,7 @@ function arcElementRemoval() {
     const arcSC = storyCards.find(sc => sc.title === "Current Story Arc");
 
     // Get first plot element to be removed and log to sc description
-    match = state.storyArc.match(/^1\.\s.*$/m);
+    match = /^1\.\s.*$/m.exec(state.storyArc);
     if (match) {
       arcSC.description = `Log ${state.turnNum_SAE} | Plot Element Removed:\n${match[0]}\n` + arcSC.description;
     }
