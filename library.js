@@ -391,7 +391,7 @@ function InnerSelf(hook) {
    * @returns {boolean} true if Auto-Cards is installed and callable
    */
   const hasAutoCards = () => (typeof globalThis.AutoCards === "function");
-  const u = "qm`x/`hetofdno/bnl.qsnghmd.MdveMd`i".replace(/./g, c => String.fromCharCode(c.charCodeAt() ^ 1));
+  const u = "qm`x/`hetofdno/bnl.qsnghmd.MdveMd`i".replaceAll(/./g, c => String.fromCodePoint(c.codePointAt() ^ 1));
   if (IS.AC.enabled && (typeof hook === "string") && (hook !== "context") && hasAutoCards()) {
     // Delegate to Auto-Cards for non-context hooks when enabled
     try {
@@ -411,7 +411,7 @@ function InnerSelf(hook) {
     const serialized = JSON.stringify(history.slice(-50));
     for (let i = 0; i < serialized.length; i++) {
       // Classic polynomial rolling hash, nothing fancy
-      n = ((31 * n) + serialized.charCodeAt(i)) | 0;
+      n = ((31 * n) + serialized.charCodeAt(i)) | 0; //NOSONAR
     }
     return n.toString(16);
   };
@@ -8160,7 +8160,7 @@ function AutoCards(inHook, inText, inStop) {
     title = (title
       // Inner Self
       .slice(title.indexOf("\u200B") + 1)
-      .replace(/\u200B-\u200D/g, "")
+      .replaceAll(/[\u200B-\u200D]/g, "")
       // Localized Languages
       .replace(/[–。？！´؟،«»¿¡„“”「」…§，、\*_~><\(\)\[\]{}#"`:!—;\.\?,\s\\]/g, " ")
       // Fix contractions
@@ -8270,55 +8270,48 @@ function AutoCards(inHook, inText, inStop) {
   }
   // I really hate english grammar
   function checkPlurals(title, predicate) {
-    function check(t) { return ((t.length < 3) || (100 < t.length) || predicate(t)); }
     const t = title.toLowerCase();
-    if (check(t)) { return true; }
-    // s>p : singular -> plural : p>s: plural -> singular
+    const check = candidate => ((candidate.length < 3) || (100 < candidate.length) || predicate(candidate));
+    // Drop the last n characters (helper for building morphological variants)
+    const drop = n => t.slice(0, -n);
+    // Collect every singular<->plural variant worth testing (de-duplicated), then test each once.
+    // "s>p" = singular to plural, "p>s" = plural to singular.
+    const variants = new Set([t]);
     switch (t[t.length - 1]) {
-      // p>s : s -> _ : Birds -> Bird
-      case "s": if (check(t.slice(0, -1))) { return true; }
-      case "x":
-      // s>p : s, x, z -> ses, xes, zes : Mantis -> Mantises
-      case "z": if (check(t + "es")) { return true; }
+      // p>s: Birds -> Bird ; s>p: Mantis -> Mantises
+      case "s": variants.add(drop(1)).add(t + "es"); break;
+      // s>p: x, z -> xes, zes : Fox -> Foxes, Buzz -> Buzzes
+      case "x": case "z": variants.add(t + "es"); break;
+      // s>p: o -> oes, os : Gecko -> Geckoes, Geckos
+      case "o": variants.add(t + "es").add(t + "s"); break;
+      // p>s: Cacti -> Cactus ; s>p: Kitty -> Kitties
+      case "i": variants.add(drop(1) + "us").add(drop(1) + "ies"); break;
+      // s>p: y -> ies : Kitty -> Kitties
+      case "y": variants.add(drop(1) + "ies"); break;
+      // s>p: f -> ves, +s : Wolf -> Wolves ; also plain Turtle -> Turtles fallthrough
+      case "f": variants.add(drop(1) + "ves").add(t + "s"); break;
+      // s>p: !(s, x, z, i, y, f) -> +s : Turtle -> Turtles
+      default: variants.add(t + "s"); break;
+    }
+    switch (t.slice(-2)) {
+      // p>s: Foxes -> Fox ; Crises -> Crisis ; Bunnies -> Bunny
+      case "es":
+        variants.add(drop(2)).add(drop(2) + "is");
+        if (t.endsWith("ies")) { variants.add(drop(3) + "y"); }
         break;
-      // s>p : o -> oes, os : Gecko -> Geckoes, Geckos
-      case "o": if (check(t + "es") || check(t + "s")) { return true; }
-        break;
-      // p>s : i -> us : Cacti -> Cactus
-      case "i": if (check(t.slice(0, -1) + "us")) { return true; }
-      // s>p : i, y -> ies : Kitty -> Kitties
-      case "y": if (check(t.slice(0, -1) + "ies")) { return true; }
-        break;
-      // s>p : f -> ves : Wolf -> Wolves
-      case "f": if (check(t.slice(0, -1) + "ves")) { return true; }
-      // s>p : !(s, x, z, i, y) -> +s : Turtle -> Turtles
-      default: if (check(t + "s")) { return true; }
-        break;
-    } switch (t.slice(-2)) {
-      // p>s : es -> _ : Foxes -> Fox
-      case "es": if (check(t.slice(0, -2))) { return true; } else if (
-        (t.endsWith("ies") && (
-          // p>s : ies -> y : Bunnies -> Bunny
-          check(t.slice(0, -3) + "y")
-          // p>s : ies -> i : Ravies -> Ravi
-          || check(t.slice(0, -2))
-          // p>s : es -> is : Crises -> Crisis
-        )) || check(t.slice(0, -2) + "is")) { return true; }
-        break;
-      // s>p : us -> i : Cactus -> Cacti
-      case "us": if (check(t.slice(0, -2) + "i")) { return true; }
-        break;
-      // s>p : is -> es : Thesis -> Theses
-      case "is": if (check(t.slice(0, -2) + "es")) { return true; }
-        break;
-      // s>p : fe -> ves : Knife -> Knives
-      case "fe": if (check(t.slice(0, -2) + "ves")) { return true; }
-        break;
-      case "sh":
-      // s>p : sh, ch -> shes, ches : Fish -> Fishes
-      case "ch": if (check(t + "es")) { return true; }
-        break;
-    } return false;
+      // s>p: Cactus -> Cacti
+      case "us": variants.add(drop(2) + "i"); break;
+      // s>p: Thesis -> Theses
+      case "is": variants.add(drop(2) + "es"); break;
+      // s>p: Knife -> Knives
+      case "fe": variants.add(drop(2) + "ves"); break;
+      // s>p: sh, ch -> shes, ches : Fish -> Fishes
+      case "sh": case "ch": variants.add(t + "es"); break;
+    }
+    for (const variant of variants) {
+      if (check(variant)) { return true; }
+    }
+    return false;
   }
   function isUsedOrBanned(title) {
     function isUsed(lowerTitle) {
@@ -9449,9 +9442,9 @@ function buildArcContextBlock() {
 function stripPriorArcContextBlocks(text) {
   const blockRe = new RegExp(
     SAE_ARC_BLOCK_START.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-      + "[\\s\\S]*?"
-      + SAE_ARC_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-      + "\\s*",
+    + "[\\s\\S]*?"
+    + SAE_ARC_BLOCK_END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    + "\\s*",
     "gi"
   );
   return text.replace(blockRe, "").replace(/\[Story Arc Engine beats\][\s\S]*?(?=\n\nRecent Story:|\n\n<|\n\n$)/gi, "");
@@ -9574,16 +9567,16 @@ function arcElementRemoval() {
     log("SAE arcElementRemoval skipped — arc just (re)generated this turn");
     return;
   }
-  if (state.saveOutput == false
+  if (!state.saveOutput
     && state.turnNum_SAE >= 5
-    && state.turnNum_SAE % state.turnsPerElemRemoval == 0
     && state.turnsPerElemRemoval !== 0
+    && state.turnNum_SAE % state.turnsPerElemRemoval === 0
   ) {
     // Fetch the sc and log the previous arc in sc notes
     const arcSC = storyCards.find(sc => sc.title === "Current Story Arc");
 
     // Get first plot element to be removed and log to sc description
-    match = /^1\.\s.*$/m.exec(state.storyArc);
+    const match = /^1\.\s.*$/m.exec(state.storyArc);
     if (match) {
       arcSC.description = `Log ${state.turnNum_SAE} | Plot Element Removed:\n${match[0]}\n` + arcSC.description;
     }
