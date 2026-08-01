@@ -238,8 +238,10 @@ function armISThoughtFrontMemory(agentName) {
   state.memory.frontMemory = [
     `INNER SELF TASK for ${agentName}:`,
     `The first character of your reply MUST be "(".`,
-    `Format: (remember = \`self-contained third-person memory naming who and what\`) then one space then story.`,
-    `Example: (remember = \`Leo worries that Kara has not returned from the market.\`) You hear Leo shift his weight.`
+    `Use (skip) unless something just happened that ${agentName} would still care about many scenes from now.`,
+    `Otherwise: (remember = \`self-contained third-person memory naming who and what\`) then one space then story.`,
+    `Example: (skip) You hear Leo shift his weight.`,
+    `Example: (remember = \`Leo admitted to Kara that he set the fire at the mill.\`) Leo will not meet her eyes.`
   ].join(" ");
   log("IS", "frontMemory armed for memory task:", agentName);
 }
@@ -1685,8 +1687,15 @@ ${envIntro[pov]}
 - ${agent.name} always behaves in a believable way.
 </SYSTEM>
                     `;
+      // Bar a moment must clear before it is worth storing at all (shared by the write/revise/merge tasks)
+      const significanceRules = `- ONLY record something ${agent.name} would still care about many scenes from now:
+  - A revelation, decision, promise, threat, betrayal, confession, or discovery.
+  - A lasting change to a relationship, a goal, or ${ownership(agent.name)} circumstances.
+- Do NOT record routine actions, passing moods, small talk, scenery, or anything the story already makes obvious.
+- Most turns contain nothing that clears this bar, and that is normal.`;
       // Rules for what a stored memory must contain (shared by the write/revise/merge tasks)
-      const memoryRules = `- The memory MUST stand on its own, understandable by someone who has NOT read the story:
+      const memoryRules = `${significanceRules}
+- The memory MUST stand on its own, understandable by someone who has NOT read the story:
   - Name WHO is involved directly (never a bare "I", "you", "he", "she", or "they").
   - State WHAT happened or was decided, and WHY it matters to ${agent.name}.
 - Write it in the **third person**, about ${agent.name} by name (e.g. "${agent.name} realized...").
@@ -1700,11 +1709,15 @@ You must output one short parenthetical task followed by the story continuation.
 
 ## SHORT TASK (REQUIRED)
 Start your output **immediately** with ONE of:
+   (skip)
    (remember = \`A brand-new self-contained memory.\`)
    (<number> = \`An improved version of an existing memory.\`)
 
+- Use \`skip\` when nothing in the recent story clears the bar below. This is the DEFAULT and the most common choice.
 - Use \`remember\` to store a NEW memory for ${agent.name}.
 - Use an existing memory's **number** (shown in square brackets beside ${ownership(agent.name)} memories) to REPLACE that memory with a better version.
+
+### WHEN TO STORE A MEMORY (applies to \`remember\` and \`<number>\`)
 ${memoryRules}
 - End the sentence with a period and backtick, then close: ".\`)".
 
@@ -1714,6 +1727,7 @@ ${memoryRules}
 - The story continues where it previously left off, with many lines or sentences of new prose.
 
 ## EXACT SHAPE
+(skip) Story continues, ${storyRule(pov).toLowerCase()}...
 (remember = \`${agent.name} did or realized something specific, naming everyone involved.\`) Story continues, ${storyRule(pov).toLowerCase()}...
 </SYSTEM>
                     `;
@@ -1746,24 +1760,30 @@ ${memoryRules}
 
 You must output **one and only one** parenthetical block followed by the story continuation.
 
-Each of ${ownership(agent.name)} existing memories is shown with a number in square brackets. There are **four** valid forms; use **exactly one**:
+Each of ${ownership(agent.name)} existing memories is shown with a number in square brackets. There are **five** valid forms; use **exactly one**:
 
-1) **Store a new memory:**
+1) **Change nothing this turn:**
+   (skip)
+2) **Store a new memory:**
    (remember = \`A new self-contained memory.\`)
-2) **Revise an existing memory by its number:**
+3) **Revise an existing memory by its number:**
    (<number> = \`An improved self-contained memory.\`)
-3) **Merge several memories into one by their numbers:**
+4) **Merge several memories into one by their numbers:**
    (merge <number>, <number> = \`One richer combined memory.\`)
-4) **Delete an outdated or useless memory by its number:**
+5) **Delete an outdated or useless memory by its number:**
    (delete <number>)
 
 ---
 
-## MEMORY CONTENT RULES (forms 1-3)
+## SKIPPING (form 1)
+- \`skip\` is the DEFAULT. Choose it unless the story just produced something that clears the bar below.
+- Storing a forgettable memory is worse than storing nothing at all.
+
+## MEMORY CONTENT RULES (forms 2-4)
 ${memoryRules}
 - End the sentence with a period and backtick **inside** the parentheses; close with ".\`)".
 
-## DELETING (form 4)
+## DELETING (form 5)
 - Only delete a memory that is outdated, incorrect, redundant, or trivial.
 - **NEVER** delete a memory that is core to ${ownership(agent.name)} identity.
 
@@ -1779,7 +1799,7 @@ ${memoryRules}
 ---
 
 ## SUMMARY
-- Choose ONE form only.
+- Choose ONE form only. When in doubt, choose (skip).
 - A memory is a self-contained, third-person statement that names everyone involved.
 - Story: ${storyRule(pov).toLowerCase()}. It should occupy the majority of the output length, with multiple lines.
 - THE FIRST CHAR OF THE WHOLE OUTPUT MUST BE "(".
@@ -1833,23 +1853,27 @@ Follow the format **perfectly**.
           );
         }
       });
-      // Build the final context with appropriate prompts
-      text = full ? (
-        // Brain is full, prompt for consolidation (merge)
-        `${prompt.directive[pov]}${self}${text.trim()}${boundary.lower}${prompt.merge[pov]}\n\n`
-      ) : ((config.chance >= 100 ? 1 : (config.chance / ((config.half && [
+      // Odds of asking for any brain task this turn, applied to merge turns too so a full
+      // brain cannot bypass the configured frequency and fire on every single turn
+      const odds = (config.chance >= 100) ? 1 : (config.chance / ((config.half && [
         // config.half -> reduce task chance after Do/Say/Story actions (player is driving)
         "do", "say", "story"
-      ].includes(getPrevAction()?.type)) ? 200 : 100))) < Math.random()) ? (
+      ].includes(getPrevAction()?.type)) ? 200 : 100));
+      // Build the final context with appropriate prompts
+      text = (odds < Math.random()) ? (
         // Sometimes do nothing and emit a side effect on IS.agent
         (IS.agent = " "),
         `${nondirective()}${self}${text.trim()} `
       ) : `${prompt.directive[pov]}${self}${text.trim()}${boundary.lower}${(
-        // Low context = simple prompt, high context = advanced prompt
-        (limit < 20000) ? prompt.assign[pov] : prompt.choice[pov]
+        full
+          // Brain is full, prompt for consolidation (merge)
+          ? prompt.merge[pov]
+          // Low context = simple prompt, high context = advanced prompt
+          : (limit < 20000) ? prompt.assign[pov] : prompt.choice[pov]
       )}\n\n`;
       log("IS", "context memory plan:", IS.agent,
-        full ? "merge-task (memory full)" : (text.includes(boundary.lower) ? "new-memory task injected" : "skipped (chance roll or passive turn)"),
+        !text.includes(boundary.lower) ? "skipped (chance roll or passive turn)"
+          : (full ? "merge-task (memory full)" : "new-memory task injected"),
         "| loaded memories:", mind.length,
         "| chance:", config.chance + "%");
       if (text.includes(boundary.lower) && IS.agent.trim() && !full) {
@@ -2586,9 +2610,15 @@ I hope you will have lots of fun!
     // No operations to execute, we're done
     if (agent !== null && blocks.length === 0) {
       log("IS", "output model ignored memory format for", agent.name,
-        "| expected: (remember = `...`) then story",
+        "| expected: (skip) or (remember = `...`) then story",
         "| hasAnyBracket:", /[(\[{]/.test(text),
         "| sample:", text.slice(0, 450));
+    }
+    // A deliberate (skip) is a healthy no-op, not a format failure worth chasing
+    if (blocks.some(b => /^[(\[{]\s*skips?\s*[)\]}]$/i.test(b.trim()))) {
+      log("IS", "output skip — nothing met the memory bar for",
+        agent?.name ?? IS.agent ?? "none");
+      return;
     }
     log("IS", "output no brain ops saved",
       agent?.name ?? IS.agent ?? "none",
@@ -8752,6 +8782,7 @@ function helpCommandInput_SAE(text) {
     - Console (Scripting): filter for "IS" to see trigger + thought plan + saves
 
     Memories are a numbered list of self-contained third-person statements (Notes section):
+    - Change nothing:      (skip) — the expected result on most turns
     - Write a new memory: (remember = \`Leo realized Mara had been lying to him for weeks.\`)
     - Revise memory 2140:  (2140 = \`Leo now trusts Mara again after she explained herself.\`)
     - Merge memories:      (merge 2140, 2141 = \`Leo and Mara reconciled after their fight over the map.\`)
@@ -8764,6 +8795,7 @@ function helpCommandInput_SAE(text) {
     - "context memory plan: … merge-task (memory full)" — brain over budget, AI asked to consolidate
     - "context memory plan: … skipped (chance roll)" — no task this turn (raise Thought formation chance in config)
     - "output saving N brain op(s)" — card entry/notes should update
+    - "output skip — nothing met the memory bar" — AI judged the turn unremarkable (this is normal and expected)
     - "output no brain ops saved" — model did not return a valid (memory) block
     - "context skip — SAE arc generation active" — Inner Self paused during Story Arc Engine
 
