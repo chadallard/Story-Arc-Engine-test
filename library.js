@@ -256,6 +256,52 @@ function disarmISThoughtFrontMemory() {
   }
 }
 
+// Removes a leading memory operation the model answered a task with, e.g. "(skip) Story..."
+// Only needed when Inner Self is off, since the normal block parser never runs then
+function stripISThoughtTaskBlock(text) {
+  if (typeof text !== "string") {
+    return text;
+  }
+  const lead = /^[\s'`´‘’]*[(\[{]/.exec(text);
+  if (!lead) {
+    return text;
+  }
+  const start = lead[0].length - 1;
+  const open = text[start];
+  const close = { "(": ")", "[": "]", "{": "}" }[open];
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === open) {
+      depth++;
+    } else if (text[i] === close) {
+      depth--;
+      if (depth === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+  }
+  if (end === -1) {
+    return text;
+  }
+  const body = text.slice(start + 1, end - 1).trim();
+  if (!([
+    // (skip)
+    /^skips?$/i,
+    // (remember = `...`) / (2140 = `...`) / (merge 2140, 2141 = `...`)
+    /^(?:remember(?:s|ed|ing)?|\d+|mer(?:ge|ges|ging|ged)?[\s\d,]*)\s*[=:]/i,
+    // (delete 2140) / (forget memory 2140)
+    /^(?:del(?:et(?:e[ds]?|ing))?|for(?:get(?:s|ting)?|got(?:ten)?)|remov(?:e[ds]?|ing))(?:[\s_]*(?:key(?:_name)?|thought|memor(?:y|ies)|unwanted(?:_key)?))?[\s=:#]*\d+\b/i
+  ].some(pattern => pattern.test(body)))) {
+    // Ordinary parenthetical prose, leave the output alone
+    return text;
+  }
+  const rest = text.slice(end).replace(/^[\s'`´‘’]+/, "");
+  // Keep a space of separation from the previous action
+  return (rest === "") ? "" : ` ${rest}`;
+}
+
 function InnerSelf(hook) {
   "use strict";
   /**
@@ -1299,7 +1345,9 @@ function InnerSelf(hook) {
       IS.AC.enabled = true;
       if (IS.AC.event || stop) {
         // If AC triggered an event or stop, we're done here
-        config.allow ? unzero() : ((IS.encoding = ""), (text ||= " "));
+        config.allow
+          ? unzero()
+          : ((IS.encoding = ""), (text ||= " "), disarmISThoughtFrontMemory());
         return;
       }
     } else if (IS.AC.enabled) {
@@ -1339,6 +1387,9 @@ function InnerSelf(hook) {
       // Early exit if Inner Self is disabled
       IS.encoding = "";
       text ||= " ";
+      // AID keeps applying state.memory.frontMemory on its own, so a task armed before
+      // Inner Self was switched off would keep demanding "(skip)" forever
+      disarmISThoughtFrontMemory();
       log("IS", "context skip — Inner Self disabled in config card");
       return;
     }
@@ -2113,8 +2164,10 @@ I hope you will have lots of fun!
     return;
   } else if (!config.allow) {
     // Early exit if Inner Self is disabled
-    text ||= "\u200B";
+    // Scrub whatever the model already answered a leftover armed task with
+    text = stripISThoughtTaskBlock(text) || "\u200B";
     IS.agent = "";
+    disarmISThoughtFrontMemory();
     return;
   }
   // Strip zero-width chars from the model output before processing
